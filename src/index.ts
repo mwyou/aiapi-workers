@@ -2,6 +2,9 @@ type Env = {
   CHANNEL_STORE: KVNamespace;
   MAX_ATTEMPTS?: string;
   ADMIN_TOKEN?: string;
+  ADMIN_USERNAME?: string;
+  ADMIN_PASSWORD?: string;
+  ADMIN_SESSION_SECRET?: string;
   PROXY_API_KEY?: string;
 };
 
@@ -35,6 +38,10 @@ export default {
       return withCors(new Response(null, { status: 204 }));
     }
 
+    if (url.pathname === "/" && request.method === "GET") {
+      return Response.redirect(`${url.origin}/admin`, 302);
+    }
+
     if (url.pathname === "/health") {
       return withCors(json({ ok: true, service: "multi-channel-openai-router" }));
     }
@@ -60,7 +67,15 @@ export default {
 };
 
 async function handleAdmin(request: Request, env: Env, url: URL): Promise<Response> {
-  if (!isAdminAuthorized(request, env)) {
+  if (url.pathname === "/admin/login" && request.method === "POST") {
+    return loginAdmin(request, env, url);
+  }
+
+  if (url.pathname === "/admin/logout" && request.method === "POST") {
+    return logoutAdmin(url);
+  }
+
+  if (!(await isAdminAuthorized(request, env))) {
     return json({ error: "Unauthorized" }, 401);
   }
 
@@ -111,6 +126,32 @@ async function handleAdmin(request: Request, env: Env, url: URL): Promise<Respon
   }
 
   return json({ error: "Not found" }, 404);
+}
+
+async function loginAdmin(request: Request, env: Env, url: URL): Promise<Response> {
+  if (!env.ADMIN_USERNAME || !env.ADMIN_PASSWORD) {
+    return json({ error: "ADMIN_USERNAME and ADMIN_PASSWORD are not configured" }, 503);
+  }
+
+  const body = await request.json<{ username?: unknown; password?: unknown }>().catch(() => null);
+  if (!body || typeof body.username !== "string" || typeof body.password !== "string") {
+    return json({ error: "Expected JSON body: { \"username\": \"...\", \"password\": \"...\" }" }, 400);
+  }
+
+  if (body.username !== env.ADMIN_USERNAME || body.password !== env.ADMIN_PASSWORD) {
+    return json({ error: "Invalid username or password" }, 401);
+  }
+
+  const token = await createAdminSession(env);
+  const headers = new Headers({ "Content-Type": "application/json; charset=utf-8" });
+  headers.append("Set-Cookie", sessionCookie(token, url, 86400));
+  return new Response(JSON.stringify({ ok: true }, null, 2), { headers });
+}
+
+function logoutAdmin(url: URL): Response {
+  const headers = new Headers({ "Content-Type": "application/json; charset=utf-8" });
+  headers.append("Set-Cookie", sessionCookie("", url, 0));
+  return new Response(JSON.stringify({ ok: true }, null, 2), { headers });
 }
 
 async function checkChannel(channel: Channel): Promise<ChannelCheck> {
@@ -312,18 +353,105 @@ function isProxyAuthorized(request: Request, env: Env): boolean {
   return bearerToken(request) === env.PROXY_API_KEY;
 }
 
-function isAdminAuthorized(request: Request, env: Env): boolean {
-  if (!env.ADMIN_TOKEN) {
-    return false;
+async function isAdminAuthorized(request: Request, env: Env): Promise<boolean> {
+  if (env.ADMIN_TOKEN && bearerToken(request) === env.ADMIN_TOKEN) {
+    return true;
   }
 
-  return bearerToken(request) === env.ADMIN_TOKEN;
+  return verifyAdminSession(cookieValue(request, "admin_session"), env);
 }
 
 function bearerToken(request: Request): string | null {
   const authorization = request.headers.get("Authorization") || "";
   const match = authorization.match(/^Bearer\s+(.+)$/i);
   return match?.[1] || null;
+}
+
+function cookieValue(request: Request, name: string): string | null {
+  const cookie = request.headers.get("Cookie") || "";
+  for (const part of cookie.split(";")) {
+    const [key, ...value] = part.trim().split("=");
+    if (key === name) {
+      return value.join("=") || null;
+    }
+  }
+
+  return null;
+}
+
+async function createAdminSession(env: Env): Promise<string> {
+  const expiresAt = Math.floor(Date.now() / 1000) + 86400;
+  const payload = base64UrlEncode(JSON.stringify({ exp: expiresAt }));
+  const signature = await hmac(payload, sessionSecret(env));
+  return `${payload}.${signature}`;
+}
+
+async function verifyAdminSession(token: string | null, env: Env): Promise<boolean> {
+  if (!token) {
+    return false;
+  }
+
+  const [payload, signature] = token.split(".");
+  if (!payload || !signature) {
+    return false;
+  }
+
+  const expected = await hmac(payload, sessionSecret(env));
+  if (signature !== expected) {
+    return false;
+  }
+
+  try {
+    const data = JSON.parse(base64UrlDecode(payload)) as { exp?: unknown };
+    return typeof data.exp === "number" && data.exp > Math.floor(Date.now() / 1000);
+  } catch {
+    return false;
+  }
+}
+
+function sessionSecret(env: Env): string {
+  return env.ADMIN_SESSION_SECRET || env.ADMIN_TOKEN || env.ADMIN_PASSWORD || "change-me";
+}
+
+async function hmac(data: string, secret: string): Promise<string> {
+  const key = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"]
+  );
+  const signature = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(data));
+  return base64UrlEncodeBytes(new Uint8Array(signature));
+}
+
+function base64UrlEncode(value: string): string {
+  return base64UrlEncodeBytes(new TextEncoder().encode(value));
+}
+
+function base64UrlEncodeBytes(bytes: Uint8Array): string {
+  let binary = "";
+  for (const byte of bytes) {
+    binary += String.fromCharCode(byte);
+  }
+
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+function base64UrlDecode(value: string): string {
+  const padded = value.replace(/-/g, "+").replace(/_/g, "/").padEnd(Math.ceil(value.length / 4) * 4, "=");
+  const binary = atob(padded);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+
+  return new TextDecoder().decode(bytes);
+}
+
+function sessionCookie(value: string, url: URL, maxAge: number): string {
+  const secure = url.protocol === "https:" ? "; Secure" : "";
+  return `admin_session=${value}; Max-Age=${maxAge}; Path=/; HttpOnly; SameSite=Strict${secure}`;
 }
 
 function annotateResponse(response: Response, channel: Channel, attempts: number): Response {
@@ -680,14 +808,19 @@ function adminPage(): string {
     <div class="stack">
       <section class="panel stack">
         <label>
-          Admin token
-          <input id="token" type="password" autocomplete="current-password" placeholder="Bearer token for ADMIN_TOKEN">
+          Username
+          <input id="username" type="text" autocomplete="username" placeholder="ADMIN_USERNAME">
+        </label>
+        <label>
+          Password
+          <input id="password" type="password" autocomplete="current-password" placeholder="ADMIN_PASSWORD">
         </label>
         <div class="row">
-          <button id="loadBtn" class="primary" type="button">Load config</button>
-          <button id="clearBtn" type="button">Forget token</button>
+          <button id="loginBtn" class="primary" type="button">Login</button>
+          <button id="logoutBtn" type="button">Logout</button>
         </div>
-        <div id="status" class="status">Enter ADMIN_TOKEN, then load the current channel config.</div>
+        <button id="loadBtn" type="button">Load config</button>
+        <div id="status" class="status">Login with ADMIN_USERNAME and ADMIN_PASSWORD, then load the current channel config.</div>
       </section>
 
       <section class="panel summary">
@@ -764,7 +897,8 @@ function adminPage(): string {
   </main>
 
   <script>
-    const tokenInput = document.querySelector("#token");
+    const usernameInput = document.querySelector("#username");
+    const passwordInput = document.querySelector("#password");
     const editor = document.querySelector("#editor");
     const statusBox = document.querySelector("#status");
     const channelRows = document.querySelector("#channelRows");
@@ -774,13 +908,10 @@ function adminPage(): string {
     const cursorCount = document.querySelector("#cursorCount");
     let checkResults = {};
 
-    tokenInput.value = localStorage.getItem("routerAdminToken") || "";
+    usernameInput.value = localStorage.getItem("routerAdminUsername") || "";
 
     function authHeaders(extra = {}) {
-      return {
-        ...extra,
-        Authorization: "Bearer " + tokenInput.value.trim()
-      };
+      return { ...extra };
     }
 
     function setStatus(message, type = "") {
@@ -789,17 +920,36 @@ function adminPage(): string {
     }
 
     async function requestJson(path, options = {}) {
-      if (!tokenInput.value.trim() && path.startsWith("/admin/")) {
-        throw new Error("ADMIN_TOKEN is required");
-      }
-
-      const response = await fetch(path, options);
+      const response = await fetch(path, { credentials: "same-origin", ...options });
       const data = await response.json().catch(() => ({}));
       if (!response.ok) {
         throw new Error(data.error || "Request failed with " + response.status);
       }
 
       return data;
+    }
+
+    async function login() {
+      localStorage.setItem("routerAdminUsername", usernameInput.value.trim());
+      await requestJson("/admin/login", {
+        method: "POST",
+        headers: authHeaders({ "Content-Type": "application/json" }),
+        body: JSON.stringify({
+          username: usernameInput.value.trim(),
+          password: passwordInput.value
+        })
+      });
+      passwordInput.value = "";
+      setStatus("Logged in.", "ok");
+      await loadAll();
+    }
+
+    async function logout() {
+      await requestJson("/admin/logout", {
+        method: "POST",
+        headers: authHeaders()
+      });
+      setStatus("Logged out.", "ok");
     }
 
     function renderChannels(channels) {
@@ -845,7 +995,6 @@ function adminPage(): string {
     }
 
     async function loadAll() {
-      localStorage.setItem("routerAdminToken", tokenInput.value.trim());
       const raw = await requestJson("/admin/channels/raw", {
         headers: authHeaders()
       });
@@ -904,10 +1053,12 @@ function adminPage(): string {
       checkChannels().catch((error) => setStatus(error.message, "error"));
     });
 
-    document.querySelector("#clearBtn").addEventListener("click", () => {
-      localStorage.removeItem("routerAdminToken");
-      tokenInput.value = "";
-      setStatus("Token removed from this browser.", "ok");
+    document.querySelector("#loginBtn").addEventListener("click", () => {
+      login().catch((error) => setStatus(error.message, "error"));
+    });
+
+    document.querySelector("#logoutBtn").addEventListener("click", () => {
+      logout().catch((error) => setStatus(error.message, "error"));
     });
 
     document.querySelector("#healthBtn").addEventListener("click", async () => {

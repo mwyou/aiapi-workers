@@ -42,6 +42,16 @@ npx wrangler kv namespace create CHANNEL_STORE
 npx wrangler secret put ADMIN_TOKEN
 ```
 
+设置后台账号密码:
+
+```powershell
+npx wrangler secret put ADMIN_USERNAME
+npx wrangler secret put ADMIN_PASSWORD
+npx wrangler secret put ADMIN_SESSION_SECRET
+```
+
+`ADMIN_TOKEN` 仍然可用于脚本调用管理 API；浏览器后台使用 `ADMIN_USERNAME` 和 `ADMIN_PASSWORD` 登录，登录后通过 HttpOnly Cookie 访问管理接口。
+
 如果希望 `/v1/*` 调用也需要鉴权，再设置:
 
 ```powershell
@@ -75,6 +85,11 @@ curl "https://你的-worker.workers.dev/v1/chat/completions" `
 
 如果未设置 `PROXY_API_KEY`，`/v1/*` 不会校验调用方 token，只负责换成渠道自己的 `apiKey` 转发。
 
+根路径 `/` 会跳转到 `/admin`，只影响浏览器打开首页。OpenAI-compatible API 不走 `/admin`:
+
+- 客户端会自动拼 `/v1` 时，base URL 填 `https://api.apioai.com`
+- 客户端不会自动拼 `/v1` 时，base URL 填 `https://api.apioai.com/v1`
+
 ## 后台管理页面
 
 部署后打开:
@@ -83,7 +98,7 @@ curl "https://你的-worker.workers.dev/v1/chat/completions" `
 https://你的-worker.workers.dev/admin
 ```
 
-页面会要求输入 `ADMIN_TOKEN`，token 只保存在当前浏览器的 `localStorage`。后台页面支持:
+页面会要求输入 `ADMIN_USERNAME` 和 `ADMIN_PASSWORD`。后台页面支持:
 
 - 查看和编辑完整渠道 JSON
 - 保存渠道池到 KV
@@ -140,6 +155,9 @@ npx wrangler kv namespace create CHANNEL_STORE
 
 ```powershell
 npx wrangler secret put ADMIN_TOKEN
+npx wrangler secret put ADMIN_USERNAME
+npx wrangler secret put ADMIN_PASSWORD
+npx wrangler secret put ADMIN_SESSION_SECRET
 npx wrangler secret put PROXY_API_KEY
 ```
 
