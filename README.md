@@ -70,6 +70,8 @@ curl "https://你的-worker.workers.dev/admin/channels" `
 
 ## OpenAI-compatible 调用
 
+外部客户端使用本项目自己的网关调用 Key，而不是渠道商的 API Key。推荐在后台页面的“网关调用 Key”里生成并保存；`PROXY_API_KEY` 环境变量仍然可作为兜底配置。如果后台和环境变量都没有设置，`/v1/*` 将不校验调用方 token，不建议公网使用。
+
 ```powershell
 curl "https://你的-worker.workers.dev/v1/chat/completions" `
   -H "Authorization: Bearer <PROXY_API_KEY>" `

@@ -33,9 +33,14 @@ type StoredAdmin = {
   sessionSecret: string;
 };
 
+type RouterSettings = {
+  proxyApiKey?: string;
+};
+
 const CHANNELS_KV = "router:channels";
 const CURSOR_PREFIX = "router:cursor:";
 const ADMIN_KV = "router:admin";
+const SETTINGS_KV = "router:settings";
 const RETRY_STATUSES = new Set([401, 403, 408, 409, 425, 429, 500, 502, 503, 504]);
 
 export default {
@@ -94,7 +99,7 @@ export default {
       return withCors(json({ error: "Not found" }, 404));
     }
 
-    if (!isProxyAuthorized(request, env)) {
+    if (!(await isProxyAuthorized(request, env))) {
       return withCors(json({ error: "Unauthorized" }, 401));
     }
 
@@ -136,6 +141,30 @@ async function handleAdmin(request: Request, env: Env, url: URL): Promise<Respon
 
   if (url.pathname === "/admin/models" && request.method === "POST") {
     return fetchChannelModels(request);
+  }
+
+  if (url.pathname === "/admin/settings" && request.method === "GET") {
+    const settings = await getSettings(env);
+    return json({
+      hasProxyApiKey: Boolean(settings.proxyApiKey || env.PROXY_API_KEY),
+      source: settings.proxyApiKey ? "admin" : env.PROXY_API_KEY ? "env" : "none",
+      proxyApiKeyPreview: maskSecret(settings.proxyApiKey || env.PROXY_API_KEY || "")
+    });
+  }
+
+  if (url.pathname === "/admin/settings" && request.method === "PUT") {
+    const body = await request.json<{ proxyApiKey?: unknown }>().catch(() => null);
+    if (!body || typeof body.proxyApiKey !== "string") {
+      return json({ error: "Expected JSON body: { \"proxyApiKey\": \"...\" }" }, 400);
+    }
+
+    const proxyApiKey = body.proxyApiKey.trim();
+    if (proxyApiKey.length < 12) {
+      return json({ error: "Proxy API key must be at least 12 characters" }, 400);
+    }
+
+    await putSettings(env, { proxyApiKey });
+    return json({ ok: true, hasProxyApiKey: true, source: "admin", proxyApiKeyPreview: maskSecret(proxyApiKey) });
   }
 
   if ((url.pathname === "/admin/channels" || url.pathname === "/admin/providers") && request.method === "GET") {
@@ -456,12 +485,13 @@ function cursorKey(scope: string): string {
   return `${CURSOR_PREFIX}${scope}`;
 }
 
-function isProxyAuthorized(request: Request, env: Env): boolean {
-  if (!env.PROXY_API_KEY) {
+async function isProxyAuthorized(request: Request, env: Env): Promise<boolean> {
+  const proxyApiKey = await getProxyApiKey(env);
+  if (!proxyApiKey) {
     return true;
   }
 
-  return bearerToken(request) === env.PROXY_API_KEY;
+  return bearerToken(request) === proxyApiKey;
 }
 
 async function isAdminAuthorized(request: Request, env: Env): Promise<boolean> {
@@ -490,6 +520,31 @@ async function getStoredAdmin(env: Env): Promise<StoredAdmin | null> {
   } catch {}
 
   return null;
+}
+
+async function getSettings(env: Env): Promise<RouterSettings> {
+  const raw = await env.CHANNEL_STORE.get(SETTINGS_KV);
+  if (!raw) {
+    return {};
+  }
+
+  try {
+    const parsed = JSON.parse(raw) as Partial<RouterSettings>;
+    return {
+      proxyApiKey: typeof parsed.proxyApiKey === "string" && parsed.proxyApiKey.trim() ? parsed.proxyApiKey.trim() : undefined
+    };
+  } catch {
+    return {};
+  }
+}
+
+async function putSettings(env: Env, settings: RouterSettings): Promise<void> {
+  await env.CHANNEL_STORE.put(SETTINGS_KV, JSON.stringify(settings));
+}
+
+async function getProxyApiKey(env: Env): Promise<string | undefined> {
+  const settings = await getSettings(env);
+  return settings.proxyApiKey || env.PROXY_API_KEY;
 }
 
 function bearerToken(request: Request): string | null {
@@ -960,6 +1015,25 @@ function adminPage(): string {
       text-transform: uppercase;
     }
 
+    .group-row td {
+      background: #f7f9fd;
+      color: var(--text);
+      font-weight: 750;
+      border-top: 1px solid var(--line);
+      border-bottom-color: #d8e0ee;
+    }
+
+    .group-meta {
+      display: inline-flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-left: 10px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 600;
+      text-transform: none;
+    }
+
     code {
       font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
       font-size: 12px;
@@ -1063,6 +1137,22 @@ function adminPage(): string {
           <b id="cursorCount">0</b>
         </div>
       </section>
+
+      <section class="panel stack">
+        <div>
+          <h2 style="margin:0;font-size:16px;" data-i18n="proxyKeyTitle">Gateway API key</h2>
+          <div class="subtle" data-i18n="proxyKeyHint">External clients use this key to call /v1.</div>
+        </div>
+        <label>
+          <span data-i18n="proxyKeyInput">New API key</span>
+          <input id="proxyApiKey" type="text" autocomplete="off" placeholder="sk-router-...">
+        </label>
+        <div class="row">
+          <button id="generateProxyKeyBtn" type="button" data-i18n="generateProxyKey">Generate</button>
+          <button id="saveProxyKeyBtn" class="primary" type="button" data-i18n="saveProxyKey">Save key</button>
+        </div>
+        <div id="proxyKeyStatus" class="status" data-i18n="proxyKeyUnknown">Not loaded.</div>
+      </section>
     </div>
 
     <div class="stack">
@@ -1118,16 +1208,7 @@ function adminPage(): string {
           </div>
           <button id="saveBtn" class="primary" type="button" data-i18n="saveChannels">Save channels</button>
         </div>
-        <textarea id="editor" spellcheck="false">[
-  {
-    "id": "nvidia",
-    "name": "NVIDIA",
-    "baseUrl": "https://integrate.api.nvidia.com/v1",
-    "apiKey": "nvapi-xxx",
-    "enabled": true,
-    "models": ["meta/llama-3.1-70b-instruct"]
-  }
-]</textarea>
+        <textarea id="editor" spellcheck="false">[]</textarea>
       </section>
 
       <section class="panel stack">
@@ -1182,7 +1263,10 @@ function adminPage(): string {
     const channelApiKeysInput = document.querySelector("#channelApiKeys");
     const channelEnabledInput = document.querySelector("#channelEnabled");
     const modelPicker = document.querySelector("#modelPicker");
+    const proxyApiKeyInput = document.querySelector("#proxyApiKey");
+    const proxyKeyStatus = document.querySelector("#proxyKeyStatus");
     let checkResults = {};
+    let lastAppliedTemplateId = "";
     const channelTemplates = [
       {
         id: "openai",
@@ -1251,6 +1335,18 @@ function adminPage(): string {
         channels: "Channels",
         enabled: "Enabled",
         cursorScopes: "Cursor scopes",
+        proxyKeyTitle: "Gateway API key",
+        proxyKeyHint: "External clients use this key to call /v1.",
+        proxyKeyInput: "New API key",
+        generateProxyKey: "Generate",
+        saveProxyKey: "Save key",
+        proxyKeyUnknown: "Not loaded.",
+        proxyKeySaved: "Gateway API key saved. Copy it into your external client.",
+        proxyKeyGenerated: "Generated locally. Save it before use.",
+        proxyKeyStatusAdmin: "Configured in admin: {preview}",
+        proxyKeyStatusEnv: "Using PROXY_API_KEY environment secret: {preview}",
+        proxyKeyStatusNone: "No gateway API key configured. Public /v1 calls are open.",
+        proxyKeyRequired: "Generate or enter an API key first.",
         quickAdd: "Quick add channels",
         quickAddHint: "Choose a template, paste one or more API keys, then generate channels.",
         generateChannels: "Generate channels",
@@ -1273,6 +1369,8 @@ function adminPage(): string {
         check: "Check",
         noData: "No data loaded.",
         noChannels: "No channels configured.",
+        accounts: "accounts",
+        allModels: "all models",
         cursors: "Cursors",
         cursorsHint: "Per model round-robin position",
         notChecked: "not checked",
@@ -1289,7 +1387,9 @@ function adminPage(): string {
         someFailed: "Some channels failed the availability check.",
         healthOk: "Worker health check passed.",
         healthBad: "Health check returned unexpected data.",
-        templateAdded: "Channels generated. Review them, then save.",
+        templateApplied: "{name} template applied.",
+        templateAdded: "Added {added} channel(s), skipped {skipped} duplicate key(s). Review them, then save.",
+        noNewKeys: "No new channels added. These keys already exist for this Base URL.",
         apiKeysRequired: "Paste at least one API key.",
         modelsLoaded: "Models loaded. Click a model to add it.",
         noModelsFound: "No models were returned by this channel.",
@@ -1310,6 +1410,18 @@ function adminPage(): string {
         channels: "渠道",
         enabled: "启用",
         cursorScopes: "游标范围",
+        proxyKeyTitle: "网关调用 Key",
+        proxyKeyHint: "外部客户端用这个 Key 调用 /v1。",
+        proxyKeyInput: "新的 API Key",
+        generateProxyKey: "生成",
+        saveProxyKey: "保存 Key",
+        proxyKeyUnknown: "尚未加载。",
+        proxyKeySaved: "网关调用 Key 已保存。把它填到外部客户端里使用。",
+        proxyKeyGenerated: "已在本地生成，使用前请先保存。",
+        proxyKeyStatusAdmin: "后台已配置：{preview}",
+        proxyKeyStatusEnv: "正在使用 PROXY_API_KEY 环境密钥：{preview}",
+        proxyKeyStatusNone: "还没有配置网关调用 Key，公网 /v1 调用将不鉴权。",
+        proxyKeyRequired: "请先生成或输入 API Key。",
         quickAdd: "快速添加渠道",
         quickAddHint: "选择模板，粘贴一个或多个 API Key，然后生成渠道。",
         generateChannels: "生成渠道",
@@ -1332,6 +1444,8 @@ function adminPage(): string {
         check: "检测",
         noData: "还没有加载数据。",
         noChannels: "还没有配置渠道。",
+        accounts: "账号",
+        allModels: "全部模型",
         cursors: "游标",
         cursorsHint: "每个模型的轮询位置",
         notChecked: "未检测",
@@ -1348,7 +1462,9 @@ function adminPage(): string {
         someFailed: "部分渠道检测失败。",
         healthOk: "Worker 健康检查通过。",
         healthBad: "健康检查返回异常。",
-        templateAdded: "渠道已生成。请检查后保存。",
+        templateApplied: "已应用 {name} 模板。",
+        templateAdded: "已添加 {added} 个渠道，跳过 {skipped} 个重复 Key。请检查后保存。",
+        noNewKeys: "没有新增渠道。这些 Key 在当前 Base URL 下已经存在。",
         apiKeysRequired: "请至少粘贴一个 API Key。",
         modelsLoaded: "模型已加载。点击模型即可添加。",
         noModelsFound: "该渠道没有返回模型列表。",
@@ -1398,17 +1514,24 @@ function adminPage(): string {
     function applyTemplateFields() {
       const template = selectedTemplate();
       const channel = template.channel;
+      lastAppliedTemplateId = template.id;
       channelIdPrefixInput.value = channel.id;
       channelNameInput.value = channel.name || template.label;
       channelBaseUrlInput.value = channel.baseUrl;
       channelModelsInput.value = (channel.models || []).join(", ");
       channelEnabledInput.checked = channel.enabled !== false;
       modelPicker.innerHTML = "";
+      setStatus(t("templateApplied").replace("{name}", template.label), "ok");
     }
 
     function setStatus(message, type = "") {
       statusBox.textContent = message;
       statusBox.className = "status" + (type ? " " + type : "");
+    }
+
+    function setProxyKeyStatus(message, type = "") {
+      proxyKeyStatus.textContent = message;
+      proxyKeyStatus.className = "status" + (type ? " " + type : "");
     }
 
     async function requestJson(path, options = {}) {
@@ -1427,6 +1550,14 @@ function adminPage(): string {
 
     function selectedModels() {
       return channelModelsInput.value.split(",").map((model) => model.trim()).filter(Boolean);
+    }
+
+    function normalizeBaseUrl(value) {
+      return String(value || "").trim().replace(/\/+$/, "").toLowerCase();
+    }
+
+    function channelFingerprint(channel) {
+      return normalizeBaseUrl(channel && channel.baseUrl) + "::" + String(channel && channel.apiKey || "").trim();
     }
 
     function setSelectedModels(models) {
@@ -1463,6 +1594,46 @@ function adminPage(): string {
       setStatus(data.models && data.models.length ? t("modelsLoaded") : t("noModelsFound"), data.models && data.models.length ? "ok" : "");
     }
 
+    async function loadSettings() {
+      const settings = await requestJson("/admin/settings", {
+        headers: authHeaders()
+      });
+
+      proxyApiKeyInput.value = "";
+      const preview = settings.proxyApiKeyPreview || "";
+      if (settings.source === "admin") {
+        setProxyKeyStatus(t("proxyKeyStatusAdmin").replace("{preview}", preview), "ok");
+      } else if (settings.source === "env") {
+        setProxyKeyStatus(t("proxyKeyStatusEnv").replace("{preview}", preview), "ok");
+      } else {
+        setProxyKeyStatus(t("proxyKeyStatusNone"), "error");
+      }
+    }
+
+    function generateProxyApiKey() {
+      const bytes = new Uint8Array(32);
+      crypto.getRandomValues(bytes);
+      const value = btoa(String.fromCharCode(...bytes)).replace(/\\+/g, "-").replace(/\\//g, "_").replace(/=+$/, "");
+      proxyApiKeyInput.value = "sk-router-" + value;
+      proxyApiKeyInput.select();
+      setProxyKeyStatus(t("proxyKeyGenerated"), "ok");
+    }
+
+    async function saveProxyApiKey() {
+      const proxyApiKey = proxyApiKeyInput.value.trim();
+      if (!proxyApiKey) {
+        throw new Error(t("proxyKeyRequired"));
+      }
+
+      const settings = await requestJson("/admin/settings", {
+        method: "PUT",
+        headers: authHeaders({ "Content-Type": "application/json" }),
+        body: JSON.stringify({ proxyApiKey })
+      });
+      proxyApiKeyInput.select();
+      setProxyKeyStatus(t("proxyKeySaved") + " " + t("proxyKeyStatusAdmin").replace("{preview}", settings.proxyApiKeyPreview || ""), "ok");
+    }
+
     async function logout() {
       await requestJson("/admin/logout", {
         method: "POST",
@@ -1480,8 +1651,31 @@ function adminPage(): string {
         return;
       }
 
-      channelRows.innerHTML = channels.map((item) => {
-        const models = Array.isArray(item.models) && item.models.length ? item.models.join(", ") : "all models";
+      const groups = [];
+      const groupMap = new Map();
+      channels.forEach((item) => {
+        const groupId = normalizeBaseUrl(item && item.baseUrl) || String(item && item.name || item && item.id || "channel");
+        if (!groupMap.has(groupId)) {
+          const group = {
+            name: item.name || item.id || "Channel",
+            baseUrl: item.baseUrl || "",
+            items: []
+          };
+          groups.push(group);
+          groupMap.set(groupId, group);
+        }
+        groupMap.get(groupId).items.push(item);
+      });
+
+      channelRows.innerHTML = groups.map((group) => {
+        const enabledInGroup = group.items.filter((item) => item.enabled !== false).length;
+        const groupHeader = '<tr class="group-row"><td colspan="5">' +
+          escapeHtml(group.name) +
+          '<span class="group-meta"><span>' + group.items.length + ' ' + escapeHtml(t("accounts")) + '</span><span>' + enabledInGroup + ' ' + escapeHtml(t("enabledBadge")) + '</span><code>' + escapeHtml(group.baseUrl) + '</code></span>' +
+        '</td></tr>';
+
+        const rows = group.items.map((item) => {
+        const models = Array.isArray(item.models) && item.models.length ? item.models.join(", ") : t("allModels");
         const status = item.enabled === false ? '<span class="badge off">' + escapeHtml(t("disabledBadge")) + '</span>' : '<span class="badge">' + escapeHtml(t("enabledBadge")) + '</span>';
         const check = checkResults[item.id];
         const checkHtml = check ? renderCheck(check) : '<span class="subtle">' + escapeHtml(t("notChecked")) + '</span>';
@@ -1492,6 +1686,9 @@ function adminPage(): string {
           '<td>' + status + '</td>' +
           '<td>' + checkHtml + '</td>' +
         '</tr>';
+        }).join("");
+
+        return groupHeader + rows;
       }).join("");
     }
 
@@ -1520,6 +1717,7 @@ function adminPage(): string {
       const cursors = await requestJson("/admin/cursors", {
         headers: authHeaders()
       });
+      await loadSettings();
 
       editor.value = JSON.stringify(raw.channels || [], null, 2);
       renderChannels(raw.channels || []);
@@ -1545,6 +1743,10 @@ function adminPage(): string {
     }
 
     function generateChannelsFromForm() {
+      if (lastAppliedTemplateId !== templateSelect.value) {
+        applyTemplateFields();
+      }
+
       const channels = JSON.parse(editor.value);
       if (!Array.isArray(channels)) {
         throw new Error(t("invalidJson"));
@@ -1556,10 +1758,22 @@ function adminPage(): string {
       }
 
       const existingIds = new Set(channels.map((item) => item && item.id).filter(Boolean));
+      const existingKeys = new Set(channels.map(channelFingerprint).filter((key) => key !== "::"));
+      const pastedKeys = new Set();
       const prefix = channelIdPrefixInput.value.trim() || selectedTemplate().channel.id;
       const models = selectedModels();
+      const baseUrl = channelBaseUrlInput.value.trim();
+      let added = 0;
+      let skipped = 0;
 
       apiKeys.forEach((apiKey, index) => {
+        const fingerprint = normalizeBaseUrl(baseUrl) + "::" + apiKey;
+        if (existingKeys.has(fingerprint) || pastedKeys.has(fingerprint)) {
+          skipped += 1;
+          return;
+        }
+        pastedKeys.add(fingerprint);
+
         let nextId = apiKeys.length === 1 ? prefix : prefix + "-" + (index + 1);
         let suffix = 2;
         while (existingIds.has(nextId)) {
@@ -1567,20 +1781,27 @@ function adminPage(): string {
           suffix += 1;
         }
         existingIds.add(nextId);
+        existingKeys.add(fingerprint);
+        added += 1;
         channels.push({
           id: nextId,
-          name: apiKeys.length === 1 ? channelNameInput.value.trim() : channelNameInput.value.trim() + " " + (index + 1),
-          baseUrl: channelBaseUrlInput.value.trim(),
+          name: channelNameInput.value.trim(),
+          baseUrl,
           apiKey,
           enabled: channelEnabledInput.checked,
           models
         });
       });
 
+      if (added === 0) {
+        setStatus(t("noNewKeys"), "error");
+        return;
+      }
+
       editor.value = JSON.stringify(channels, null, 2);
       renderChannels(channels);
       channelApiKeysInput.value = "";
-      setStatus(t("templateAdded"), "ok");
+      setStatus(t("templateAdded").replace("{added}", added).replace("{skipped}", skipped), "ok");
     }
 
     async function checkChannels() {
@@ -1601,6 +1822,14 @@ function adminPage(): string {
 
     document.querySelector("#refreshBtn").addEventListener("click", () => {
       loadAll().catch((error) => setStatus(error.message, "error"));
+    });
+
+    document.querySelector("#generateProxyKeyBtn").addEventListener("click", () => {
+      generateProxyApiKey();
+    });
+
+    document.querySelector("#saveProxyKeyBtn").addEventListener("click", () => {
+      saveProxyApiKey().catch((error) => setProxyKeyStatus(error.message, "error"));
     });
 
     document.querySelector("#saveBtn").addEventListener("click", () => {
