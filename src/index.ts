@@ -706,9 +706,9 @@ function adminPage(): string {
     }
 
     .header-inner {
-      max-width: 1180px;
+      max-width: 1680px;
       margin: 0 auto;
-      padding: 18px 22px;
+      padding: 12px 18px;
       display: flex;
       justify-content: space-between;
       align-items: center;
@@ -729,12 +729,12 @@ function adminPage(): string {
     }
 
     main {
-      max-width: 1180px;
+      max-width: 1680px;
       margin: 0 auto;
-      padding: 24px 22px 42px;
+      padding: 16px 18px 28px;
       display: grid;
-      grid-template-columns: minmax(260px, 330px) minmax(0, 1fr);
-      gap: 18px;
+      grid-template-columns: minmax(240px, 280px) minmax(0, 1fr);
+      gap: 14px;
     }
 
     section {
@@ -745,12 +745,12 @@ function adminPage(): string {
     }
 
     .panel {
-      padding: 18px;
+      padding: 14px;
     }
 
     .stack {
       display: grid;
-      gap: 14px;
+      gap: 12px;
       align-content: start;
     }
 
@@ -783,13 +783,13 @@ function adminPage(): string {
 
     input,
     select {
-      height: 40px;
-      padding: 0 11px;
+      height: 36px;
+      padding: 0 10px;
     }
 
     textarea {
-      min-height: 470px;
-      padding: 14px;
+      min-height: 220px;
+      padding: 12px;
       resize: vertical;
       font: 13px/1.55 "SFMono-Regular", Consolas, "Liberation Mono", monospace;
       tab-size: 2;
@@ -803,7 +803,7 @@ function adminPage(): string {
     }
 
     button {
-      height: 38px;
+      height: 36px;
       border: 1px solid var(--line);
       border-radius: 7px;
       background: #fff;
@@ -814,7 +814,7 @@ function adminPage(): string {
     }
 
     a.button {
-      height: 38px;
+      height: 36px;
       border: 1px solid var(--accent);
       border-radius: 7px;
       background: var(--accent);
@@ -867,16 +867,25 @@ function adminPage(): string {
 
     .form-grid {
       display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 12px;
+      grid-template-columns: minmax(220px, 1fr) minmax(180px, 0.7fr) minmax(240px, 1fr);
+      gap: 10px;
     }
 
     .form-grid .wide {
       grid-column: 1 / -1;
     }
 
+    .form-grid .span-2 {
+      grid-column: span 2;
+    }
+
     .mini-textarea {
-      min-height: 92px;
+      min-height: 76px;
+    }
+
+    #editor {
+      min-height: 240px;
+      max-height: 420px;
     }
 
     .checkline {
@@ -914,7 +923,7 @@ function adminPage(): string {
       display: flex;
       justify-content: space-between;
       gap: 12px;
-      padding: 10px 0;
+      padding: 8px 0;
       border-bottom: 1px solid var(--line);
     }
 
@@ -997,6 +1006,10 @@ function adminPage(): string {
       .form-grid {
         grid-template-columns: 1fr;
       }
+
+      .form-grid .span-2 {
+        grid-column: 1 / -1;
+      }
     }
 
     @media (max-width: 520px) {
@@ -1074,17 +1087,16 @@ function adminPage(): string {
             <span data-i18n="channelName">Channel name</span>
             <input id="channelName" type="text" placeholder="DeepSeek">
           </label>
-          <label>
+          <label class="span-2">
             <span data-i18n="baseUrl">Base URL</span>
             <input id="channelBaseUrl" type="url" placeholder="https://api.example.com/v1">
           </label>
-          <label class="wide">
+          <label class="span-2">
             <span data-i18n="modelsInput">Models</span>
             <input id="channelModels" type="text" placeholder="model-a, model-b">
           </label>
-          <div class="row wide">
+          <div class="row">
             <button id="fetchModelsBtn" type="button" data-i18n="fetchModels">Fetch models</button>
-            <span class="subtle" data-i18n="fetchModelsHint">Uses Base URL and the first API key.</span>
           </div>
           <div id="modelPicker" class="model-picker wide"></div>
           <label class="wide">
@@ -1343,7 +1355,21 @@ function adminPage(): string {
         invalidJson: "编辑器内容必须是 JSON 数组。"
       }
     };
-    let adminLang = localStorage.getItem("routerLang") || ((navigator.language || "").toLowerCase().startsWith("zh") ? "zh" : "en");
+    function storageGet(key) {
+      try {
+        return window.localStorage ? window.localStorage.getItem(key) : null;
+      } catch {
+        return null;
+      }
+    }
+
+    function storageSet(key, value) {
+      try {
+        if (window.localStorage) window.localStorage.setItem(key, value);
+      } catch {}
+    }
+
+    let adminLang = storageGet("routerLang") || ((navigator.language || "").toLowerCase().startsWith("zh") ? "zh" : "en");
 
     function t(key) {
       return adminMessages[adminLang][key] || adminMessages.en[key] || key;
@@ -1355,7 +1381,7 @@ function adminPage(): string {
         const key = node.getAttribute("data-i18n");
         node.textContent = t(key);
       });
-      localStorage.setItem("routerLang", adminLang);
+      storageSet("routerLang", adminLang);
     }
 
     templateSelect.innerHTML = channelTemplates.map((template) => '<option value="' + escapeHtml(template.id) + '">' + escapeHtml(template.label) + '</option>').join("");
@@ -1396,7 +1422,7 @@ function adminPage(): string {
     }
 
     function currentApiKeys() {
-      return channelApiKeysInput.value.split(/\r?\n/).map((key) => key.trim()).filter(Boolean);
+      return channelApiKeysInput.value.split(/\\r?\\n/).map((key) => key.trim()).filter(Boolean);
     }
 
     function selectedModels() {
@@ -1832,7 +1858,21 @@ function authPage(mode: "login" | "setup"): string {
         failed: "请求失败"
       }
     };
-    let lang = localStorage.getItem("routerLang") || ((navigator.language || "").toLowerCase().startsWith("zh") ? "zh" : "en");
+    function storageGet(key) {
+      try {
+        return window.localStorage ? window.localStorage.getItem(key) : null;
+      } catch {
+        return null;
+      }
+    }
+
+    function storageSet(key, value) {
+      try {
+        if (window.localStorage) window.localStorage.setItem(key, value);
+      } catch {}
+    }
+
+    let lang = storageGet("routerLang") || ((navigator.language || "").toLowerCase().startsWith("zh") ? "zh" : "en");
     const mode = "${mode}";
     const statusBox = document.querySelector("#status");
 
@@ -1846,7 +1886,7 @@ function authPage(mode: "login" | "setup"): string {
         const key = node.getAttribute("data-i18n");
         node.textContent = t(key);
       });
-      localStorage.setItem("routerLang", lang);
+      storageSet("routerLang", lang);
     }
 
     function setStatus(message, type = "") {
@@ -2251,7 +2291,21 @@ function homePage(): string {
       }
     };
 
-    let lang = localStorage.getItem("routerLang") || ((navigator.language || "").toLowerCase().startsWith("zh") ? "zh" : "en");
+    function storageGet(key) {
+      try {
+        return window.localStorage ? window.localStorage.getItem(key) : null;
+      } catch {
+        return null;
+      }
+    }
+
+    function storageSet(key, value) {
+      try {
+        if (window.localStorage) window.localStorage.setItem(key, value);
+      } catch {}
+    }
+
+    let lang = storageGet("routerLang") || ((navigator.language || "").toLowerCase().startsWith("zh") ? "zh" : "en");
     const rootEndpoint = document.querySelector("#rootEndpoint");
     const v1Endpoint = document.querySelector("#v1Endpoint");
     rootEndpoint.textContent = location.origin;
@@ -2264,7 +2318,7 @@ function homePage(): string {
         const key = node.getAttribute("data-i18n");
         if (dict[key]) node.textContent = dict[key];
       });
-      localStorage.setItem("routerLang", lang);
+      storageSet("routerLang", lang);
     }
 
     document.querySelector("#langBtn").addEventListener("click", () => {
