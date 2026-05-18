@@ -26,6 +26,13 @@ type ChannelCheck = {
   error?: string;
 };
 
+type StoredAdmin = {
+  username: string;
+  passwordHash: string;
+  salt: string;
+  sessionSecret: string;
+};
+
 const CHANNELS_KV = "router:channels";
 const CURSOR_PREFIX = "router:cursor:";
 const ADMIN_KV = "router:admin";
@@ -96,6 +103,10 @@ export default {
 };
 
 async function handleAdmin(request: Request, env: Env, url: URL): Promise<Response> {
+  if (url.pathname === "/admin/setup" && request.method === "POST") {
+    return setupAdmin(request, env, url);
+  }
+
   if (url.pathname === "/admin/login" && request.method === "POST") {
     return loginAdmin(request, env, url);
   }
@@ -157,9 +168,9 @@ async function handleAdmin(request: Request, env: Env, url: URL): Promise<Respon
   return json({ error: "Not found" }, 404);
 }
 
-async function loginAdmin(request: Request, env: Env, url: URL): Promise<Response> {
-  if (!env.ADMIN_USERNAME || !env.ADMIN_PASSWORD) {
-    return json({ error: "ADMIN_USERNAME and ADMIN_PASSWORD are not configured" }, 503);
+async function setupAdmin(request: Request, env: Env, url: URL): Promise<Response> {
+  if (await isAdminConfigured(env)) {
+    return json({ error: "Admin account is already configured" }, 409);
   }
 
   const body = await request.json<{ username?: unknown; password?: unknown }>().catch(() => null);
@@ -167,11 +178,41 @@ async function loginAdmin(request: Request, env: Env, url: URL): Promise<Respons
     return json({ error: "Expected JSON body: { \"username\": \"...\", \"password\": \"...\" }" }, 400);
   }
 
-  if (body.username !== env.ADMIN_USERNAME || body.password !== env.ADMIN_PASSWORD) {
+  const username = body.username.trim();
+  if (username.length < 3 || body.password.length < 8) {
+    return json({ error: "Username must be at least 3 chars and password at least 8 chars" }, 400);
+  }
+
+  const salt = randomToken(18);
+  const admin: StoredAdmin = {
+    username,
+    salt,
+    passwordHash: await hashPassword(body.password, salt),
+    sessionSecret: randomToken(32)
+  };
+
+  await env.CHANNEL_STORE.put(ADMIN_KV, JSON.stringify(admin));
+  const token = await createAdminSession(env, admin);
+  const headers = new Headers({ "Content-Type": "application/json; charset=utf-8" });
+  headers.append("Set-Cookie", sessionCookie(token, url, 86400));
+  return new Response(JSON.stringify({ ok: true }, null, 2), { headers });
+}
+
+async function loginAdmin(request: Request, env: Env, url: URL): Promise<Response> {
+  const body = await request.json<{ username?: unknown; password?: unknown }>().catch(() => null);
+  if (!body || typeof body.username !== "string" || typeof body.password !== "string") {
+    return json({ error: "Expected JSON body: { \"username\": \"...\", \"password\": \"...\" }" }, 400);
+  }
+
+  const storedAdmin = await getStoredAdmin(env);
+  const envMatches = env.ADMIN_USERNAME && env.ADMIN_PASSWORD && body.username === env.ADMIN_USERNAME && body.password === env.ADMIN_PASSWORD;
+  const kvMatches = storedAdmin && body.username === storedAdmin.username && (await hashPassword(body.password, storedAdmin.salt)) === storedAdmin.passwordHash;
+
+  if (!envMatches && !kvMatches) {
     return json({ error: "Invalid username or password" }, 401);
   }
 
-  const token = await createAdminSession(env);
+  const token = await createAdminSession(env, storedAdmin || undefined);
   const headers = new Headers({ "Content-Type": "application/json; charset=utf-8" });
   headers.append("Set-Cookie", sessionCookie(token, url, 86400));
   return new Response(JSON.stringify({ ok: true }, null, 2), { headers });
@@ -387,7 +428,27 @@ async function isAdminAuthorized(request: Request, env: Env): Promise<boolean> {
     return true;
   }
 
-  return verifyAdminSession(cookieValue(request, "admin_session"), env);
+  return verifyAdminSession(cookieValue(request, "admin_session"), env, await getStoredAdmin(env));
+}
+
+async function isAdminConfigured(env: Env): Promise<boolean> {
+  return Boolean((env.ADMIN_USERNAME && env.ADMIN_PASSWORD) || (await getStoredAdmin(env)));
+}
+
+async function getStoredAdmin(env: Env): Promise<StoredAdmin | null> {
+  const raw = await env.CHANNEL_STORE.get(ADMIN_KV);
+  if (!raw) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(raw) as Partial<StoredAdmin>;
+    if (parsed.username && parsed.passwordHash && parsed.salt && parsed.sessionSecret) {
+      return parsed as StoredAdmin;
+    }
+  } catch {}
+
+  return null;
 }
 
 function bearerToken(request: Request): string | null {
@@ -408,14 +469,14 @@ function cookieValue(request: Request, name: string): string | null {
   return null;
 }
 
-async function createAdminSession(env: Env): Promise<string> {
+async function createAdminSession(env: Env, admin?: StoredAdmin): Promise<string> {
   const expiresAt = Math.floor(Date.now() / 1000) + 86400;
   const payload = base64UrlEncode(JSON.stringify({ exp: expiresAt }));
-  const signature = await hmac(payload, sessionSecret(env));
+  const signature = await hmac(payload, sessionSecret(env, admin));
   return `${payload}.${signature}`;
 }
 
-async function verifyAdminSession(token: string | null, env: Env): Promise<boolean> {
+async function verifyAdminSession(token: string | null, env: Env, admin: StoredAdmin | null): Promise<boolean> {
   if (!token) {
     return false;
   }
@@ -425,7 +486,7 @@ async function verifyAdminSession(token: string | null, env: Env): Promise<boole
     return false;
   }
 
-  const expected = await hmac(payload, sessionSecret(env));
+  const expected = await hmac(payload, sessionSecret(env, admin || undefined));
   if (signature !== expected) {
     return false;
   }
@@ -438,8 +499,29 @@ async function verifyAdminSession(token: string | null, env: Env): Promise<boole
   }
 }
 
-function sessionSecret(env: Env): string {
-  return env.ADMIN_SESSION_SECRET || env.ADMIN_TOKEN || env.ADMIN_PASSWORD || "change-me";
+function sessionSecret(env: Env, admin?: StoredAdmin): string {
+  return admin?.sessionSecret || env.ADMIN_SESSION_SECRET || env.ADMIN_TOKEN || env.ADMIN_PASSWORD || "change-me";
+}
+
+async function hashPassword(password: string, salt: string): Promise<string> {
+  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(password), "PBKDF2", false, ["deriveBits"]);
+  const bits = await crypto.subtle.deriveBits(
+    {
+      name: "PBKDF2",
+      hash: "SHA-256",
+      salt: new TextEncoder().encode(salt),
+      iterations: 100000
+    },
+    key,
+    256
+  );
+  return base64UrlEncodeBytes(new Uint8Array(bits));
+}
+
+function randomToken(bytes: number): string {
+  const data = new Uint8Array(bytes);
+  crypto.getRandomValues(data);
+  return base64UrlEncodeBytes(data);
 }
 
 async function hmac(data: string, secret: string): Promise<string> {
@@ -690,6 +772,20 @@ function adminPage(): string {
       cursor: pointer;
     }
 
+    a.button {
+      height: 38px;
+      border: 1px solid var(--accent);
+      border-radius: 7px;
+      background: var(--accent);
+      color: #fff;
+      padding: 0 13px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      text-decoration: none;
+      font: 650 13px/1 Inter, ui-sans-serif, system-ui, sans-serif;
+    }
+
     button.primary {
       border-color: var(--accent);
       background: var(--accent);
@@ -842,20 +938,12 @@ function adminPage(): string {
   <main>
     <div class="stack">
       <section class="panel stack">
-        <label>
-          <span data-i18n="username">Username</span>
-          <input id="username" type="text" autocomplete="username" placeholder="ADMIN_USERNAME">
-        </label>
-        <label>
-          <span data-i18n="password">Password</span>
-          <input id="password" type="password" autocomplete="current-password" placeholder="ADMIN_PASSWORD">
-        </label>
         <div class="row">
-          <button id="loginBtn" class="primary" type="button" data-i18n="login">Login</button>
+          <a class="button primary" href="/" data-i18n="home">Home</a>
           <button id="logoutBtn" type="button" data-i18n="logout">Logout</button>
         </div>
         <button id="loadBtn" type="button" data-i18n="loadConfig">Load config</button>
-        <div id="status" class="status" data-i18n="loginHint">Login with ADMIN_USERNAME and ADMIN_PASSWORD, then load the current channel config.</div>
+        <div id="status" class="status" data-i18n="adminReady">You are signed in. Load the current channel config to start.</div>
       </section>
 
       <section class="panel summary">
@@ -939,8 +1027,6 @@ function adminPage(): string {
   </main>
 
   <script>
-    const usernameInput = document.querySelector("#username");
-    const passwordInput = document.querySelector("#password");
     const editor = document.querySelector("#editor");
     const statusBox = document.querySelector("#status");
     const channelRows = document.querySelector("#channelRows");
@@ -1007,12 +1093,14 @@ function adminPage(): string {
         adminTitle: "Multi-channel Router Admin",
         adminSub: "Manage OpenAI-compatible channels stored in Workers KV.",
         checkHealth: "Check health",
+        home: "Home",
         username: "Username",
         password: "Password",
         login: "Login",
         logout: "Logout",
         loadConfig: "Load config",
         loginHint: "Login with ADMIN_USERNAME and ADMIN_PASSWORD, then load the current channel config.",
+        adminReady: "You are signed in. Load the current channel config to start.",
         channels: "Channels",
         enabled: "Enabled",
         cursorScopes: "Cursor scopes",
@@ -1053,12 +1141,14 @@ function adminPage(): string {
         adminTitle: "多渠道路由后台",
         adminSub: "管理保存在 Workers KV 中的 OpenAI-compatible 渠道。",
         checkHealth: "健康检查",
+        home: "首页",
         username: "账号",
         password: "密码",
         login: "登录",
         logout: "退出",
         loadConfig: "加载配置",
         loginHint: "使用 ADMIN_USERNAME 和 ADMIN_PASSWORD 登录，然后加载渠道配置。",
+        adminReady: "你已登录。加载当前渠道配置后即可开始管理。",
         channels: "渠道",
         enabled: "启用",
         cursorScopes: "游标范围",
@@ -1111,7 +1201,6 @@ function adminPage(): string {
       localStorage.setItem("routerLang", adminLang);
     }
 
-    usernameInput.value = localStorage.getItem("routerAdminUsername") || "";
     templateSelect.innerHTML = channelTemplates.map((template) => '<option value="' + escapeHtml(template.id) + '">' + escapeHtml(template.label) + '</option>').join("");
 
     function authHeaders(extra = {}) {
@@ -1133,27 +1222,12 @@ function adminPage(): string {
       return data;
     }
 
-    async function login() {
-      localStorage.setItem("routerAdminUsername", usernameInput.value.trim());
-      await requestJson("/admin/login", {
-        method: "POST",
-        headers: authHeaders({ "Content-Type": "application/json" }),
-        body: JSON.stringify({
-          username: usernameInput.value.trim(),
-          password: passwordInput.value
-        })
-      });
-      passwordInput.value = "";
-      setStatus(t("loggedIn"), "ok");
-      await loadAll();
-    }
-
     async function logout() {
       await requestJson("/admin/logout", {
         method: "POST",
         headers: authHeaders()
       });
-      setStatus(t("loggedOut"), "ok");
+      location.href = "/admin/login";
     }
 
     function renderChannels(channels) {
@@ -1285,10 +1359,6 @@ function adminPage(): string {
 
     document.querySelector("#checkChannelsBtn").addEventListener("click", () => {
       checkChannels().catch((error) => setStatus(error.message, "error"));
-    });
-
-    document.querySelector("#loginBtn").addEventListener("click", () => {
-      login().catch((error) => setStatus(error.message, "error"));
     });
 
     document.querySelector("#logoutBtn").addEventListener("click", () => {
