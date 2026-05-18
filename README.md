@@ -87,8 +87,8 @@ curl "https://你的-worker.workers.dev/v1/chat/completions" `
 
 根路径 `/` 会跳转到 `/admin`，只影响浏览器打开首页。OpenAI-compatible API 不走 `/admin`:
 
-- 客户端会自动拼 `/v1` 时，base URL 填 `https://api.apioai.com`
-- 客户端不会自动拼 `/v1` 时，base URL 填 `https://api.apioai.com/v1`
+- 客户端会自动拼 `/v1` 时，base URL 填你的 Worker 域名，例如 `https://你的域名`
+- 客户端不会自动拼 `/v1` 时，base URL 填你的 Worker 域名加 `/v1`，例如 `https://你的域名/v1`
 
 ## 后台管理页面
 
