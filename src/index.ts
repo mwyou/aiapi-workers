@@ -1188,6 +1188,10 @@ function adminPage(): string {
           <div class="row">
             <button id="fetchModelsBtn" type="button" data-i18n="fetchModels">Fetch models</button>
           </div>
+          <label class="span-2">
+            <span data-i18n="modelSearch">Search fetched models</span>
+            <input id="modelSearch" type="search" placeholder="qwen, gpt, llama">
+          </label>
           <div id="modelPicker" class="model-picker wide"></div>
           <label class="wide">
             <span data-i18n="apiKeysInput">API keys</span>
@@ -1260,6 +1264,7 @@ function adminPage(): string {
     const channelNameInput = document.querySelector("#channelName");
     const channelBaseUrlInput = document.querySelector("#channelBaseUrl");
     const channelModelsInput = document.querySelector("#channelModels");
+    const modelSearchInput = document.querySelector("#modelSearch");
     const channelApiKeysInput = document.querySelector("#channelApiKeys");
     const channelEnabledInput = document.querySelector("#channelEnabled");
     const modelPicker = document.querySelector("#modelPicker");
@@ -1267,6 +1272,7 @@ function adminPage(): string {
     const proxyKeyStatus = document.querySelector("#proxyKeyStatus");
     let checkResults = {};
     let lastAppliedTemplateId = "";
+    let fetchedModels = [];
     const channelTemplates = [
       {
         id: "openai",
@@ -1353,6 +1359,7 @@ function adminPage(): string {
         channelIdPrefix: "ID prefix",
         channelName: "Channel name",
         modelsInput: "Models",
+        modelSearch: "Search fetched models",
         apiKeysInput: "API keys",
         fetchModels: "Fetch models",
         fetchModelsHint: "Uses Base URL and the first API key.",
@@ -1393,6 +1400,7 @@ function adminPage(): string {
         apiKeysRequired: "Paste at least one API key.",
         modelsLoaded: "Models loaded. Click a model to add it.",
         noModelsFound: "No models were returned by this channel.",
+        modelSearchEmpty: "No fetched models match this search.",
         invalidJson: "Editor must contain a JSON array."
       },
       zh: {
@@ -1428,6 +1436,7 @@ function adminPage(): string {
         channelIdPrefix: "ID 前缀",
         channelName: "渠道名称",
         modelsInput: "模型",
+        modelSearch: "搜索已获取模型",
         apiKeysInput: "API Key",
         fetchModels: "获取模型",
         fetchModelsHint: "使用 Base URL 和第一条 API Key。",
@@ -1468,6 +1477,7 @@ function adminPage(): string {
         apiKeysRequired: "请至少粘贴一个 API Key。",
         modelsLoaded: "模型已加载。点击模型即可添加。",
         noModelsFound: "该渠道没有返回模型列表。",
+        modelSearchEmpty: "没有匹配的已获取模型。",
         invalidJson: "编辑器内容必须是 JSON 数组。"
       }
     };
@@ -1520,6 +1530,8 @@ function adminPage(): string {
       channelBaseUrlInput.value = channel.baseUrl;
       channelModelsInput.value = (channel.models || []).join(", ");
       channelEnabledInput.checked = channel.enabled !== false;
+      modelSearchInput.value = "";
+      fetchedModels = [];
       modelPicker.innerHTML = "";
       setStatus(t("templateApplied").replace("{name}", template.label), "ok");
     }
@@ -1569,7 +1581,14 @@ function adminPage(): string {
     }
 
     function renderModelPicker(models) {
-      modelPicker.innerHTML = models.map((model) => '<button class="model-chip" type="button" data-model="' + escapeHtml(model) + '">' + escapeHtml(model) + '</button>').join("");
+      const query = modelSearchInput.value.trim().toLowerCase();
+      const visibleModels = query ? models.filter((model) => model.toLowerCase().includes(query)) : models;
+      if (models.length && visibleModels.length === 0) {
+        modelPicker.innerHTML = '<div class="subtle">' + escapeHtml(t("modelSearchEmpty")) + '</div>';
+        return;
+      }
+
+      modelPicker.innerHTML = visibleModels.map((model) => '<button class="model-chip" type="button" data-model="' + escapeHtml(model) + '">' + escapeHtml(model) + '</button>').join("");
       modelPicker.querySelectorAll("[data-model]").forEach((button) => {
         button.addEventListener("click", () => addModel(button.dataset.model));
       });
@@ -1590,8 +1609,10 @@ function adminPage(): string {
           apiKey
         })
       });
-      renderModelPicker(data.models || []);
-      setStatus(data.models && data.models.length ? t("modelsLoaded") : t("noModelsFound"), data.models && data.models.length ? "ok" : "");
+      fetchedModels = data.models || [];
+      modelSearchInput.value = "";
+      renderModelPicker(fetchedModels);
+      setStatus(fetchedModels.length ? t("modelsLoaded") : t("noModelsFound"), fetchedModels.length ? "ok" : "");
     }
 
     async function loadSettings() {
@@ -1852,6 +1873,10 @@ function adminPage(): string {
       fetchModels().catch((error) => setStatus(error.message, "error"));
     });
 
+    modelSearchInput.addEventListener("input", () => {
+      renderModelPicker(fetchedModels);
+    });
+
     document.querySelector("#checkChannelsBtn").addEventListener("click", () => {
       checkChannels().catch((error) => setStatus(error.message, "error"));
     });
@@ -1879,6 +1904,7 @@ function adminPage(): string {
       }
     });
     applyAdminLang();
+    loadAll().catch((error) => setStatus(error.message, "error"));
   </script>
 </body>
 </html>`;
