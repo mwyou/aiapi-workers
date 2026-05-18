@@ -35,6 +35,20 @@ type StoredAdmin = {
 
 type RouterSettings = {
   proxyApiKey?: string;
+  gatewayKeys?: GatewayKey[];
+};
+
+type GatewayKey = {
+  id: string;
+  name?: string;
+  key: string;
+  channelIds?: string[];
+  createdAt?: string;
+};
+
+type ProxyAuthorization = {
+  ok: boolean;
+  channelIds?: string[];
 };
 
 const CHANNELS_KV = "router:channels";
@@ -99,11 +113,12 @@ export default {
       return withCors(json({ error: "Not found" }, 404));
     }
 
-    if (!(await isProxyAuthorized(request, env))) {
+    const proxyAuthorization = await authorizeProxy(request, env);
+    if (!proxyAuthorization.ok) {
         return withCors(json({ error: "Unauthorized. Configure a Gateway API key in /admin first." }, 401));
     }
 
-    return withCors(await proxyToChannel(request, env, url));
+    return withCors(await proxyToChannel(request, env, url, proxyAuthorization.channelIds));
   }
 };
 
@@ -145,15 +160,17 @@ async function handleAdmin(request: Request, env: Env, url: URL): Promise<Respon
 
   if (url.pathname === "/admin/settings" && request.method === "GET") {
     const settings = await getSettings(env);
+    const gatewayKeys = settings.gatewayKeys || [];
     return json({
-      hasProxyApiKey: Boolean(settings.proxyApiKey || env.PROXY_API_KEY),
-      source: settings.proxyApiKey ? "admin" : env.PROXY_API_KEY ? "env" : "none",
-      proxyApiKeyPreview: maskSecret(settings.proxyApiKey || env.PROXY_API_KEY || "")
+      hasProxyApiKey: Boolean(gatewayKeys.length || settings.proxyApiKey || env.PROXY_API_KEY),
+      source: gatewayKeys.length ? "admin" : settings.proxyApiKey ? "admin" : env.PROXY_API_KEY ? "env" : "none",
+      proxyApiKeyPreview: maskSecret(gatewayKeys[0]?.key || settings.proxyApiKey || env.PROXY_API_KEY || ""),
+      gatewayKeys: gatewayKeys.map(maskGatewayKey)
     });
   }
 
   if (url.pathname === "/admin/settings" && request.method === "PUT") {
-    const body = await request.json<{ proxyApiKey?: unknown }>().catch(() => null);
+    const body = await request.json<{ proxyApiKey?: unknown; name?: unknown; channelIds?: unknown; gatewayKeys?: unknown }>().catch(() => null);
     if (!body || typeof body.proxyApiKey !== "string") {
       return json({ error: "Expected JSON body: { \"proxyApiKey\": \"...\" }" }, 400);
     }
@@ -163,8 +180,24 @@ async function handleAdmin(request: Request, env: Env, url: URL): Promise<Respon
       return json({ error: "Proxy API key must be at least 12 characters" }, 400);
     }
 
-    await putSettings(env, { proxyApiKey });
-    return json({ ok: true, hasProxyApiKey: true, source: "admin", proxyApiKeyPreview: maskSecret(proxyApiKey) });
+    const settings = await getSettings(env);
+    const gatewayKeys = settings.gatewayKeys || [];
+    const channelIds = parseChannelIds(body.channelIds);
+    const id = `key-${Date.now().toString(36)}-${randomToken(6)}`;
+    const gatewayKey: GatewayKey = {
+      id,
+      name: typeof body.name === "string" && body.name.trim() ? body.name.trim() : undefined,
+      key: proxyApiKey,
+      channelIds,
+      createdAt: new Date().toISOString()
+    };
+    const nextSettings = {
+      ...settings,
+      proxyApiKey: undefined,
+      gatewayKeys: [...gatewayKeys.filter((item) => item.key !== proxyApiKey), gatewayKey]
+    };
+    await putSettings(env, nextSettings);
+    return json({ ok: true, hasProxyApiKey: true, source: "admin", proxyApiKeyPreview: maskSecret(proxyApiKey), gatewayKeys: nextSettings.gatewayKeys.map(maskGatewayKey) });
   }
 
   if ((url.pathname === "/admin/channels" || url.pathname === "/admin/providers") && request.method === "GET") {
@@ -324,10 +357,12 @@ async function fetchChannelModels(request: Request): Promise<Response> {
   }
 }
 
-async function proxyToChannel(request: Request, env: Env, inputUrl: URL): Promise<Response> {
+async function proxyToChannel(request: Request, env: Env, inputUrl: URL, allowedChannelIds?: string[]): Promise<Response> {
   const body = await getReusableBody(request);
   const requestedModel = extractRequestedModel(request, body);
-  const channels = selectChannels(await getChannels(env), requestedModel);
+  const allowed = allowedChannelIds && allowedChannelIds.length ? new Set(allowedChannelIds) : null;
+  const availableChannels = allowed ? (await getChannels(env)).filter((channel) => allowed.has(channel.id)) : await getChannels(env);
+  const channels = selectChannels(availableChannels, requestedModel);
 
   if (channels.length === 0) {
     return json({ error: "No enabled channels match this request", model: requestedModel }, 503);
@@ -451,7 +486,7 @@ function normalizeChannels(value: unknown): Channel[] {
       ? raw.models.filter((model): model is string => typeof model === "string" && model.trim().length > 0)
       : undefined;
 
-    return [{ id, name, baseUrl, apiKey, enabled, models }];
+    return [{ id, name, baseUrl, apiKey, enabled, models: models ? [...new Set(models)] : undefined }];
   });
 }
 
@@ -495,13 +530,28 @@ function cursorKey(scope: string): string {
   return `${CURSOR_PREFIX}${scope}`;
 }
 
-async function isProxyAuthorized(request: Request, env: Env): Promise<boolean> {
-  const proxyApiKey = await getProxyApiKey(env);
-  if (!proxyApiKey) {
-    return false;
+async function authorizeProxy(request: Request, env: Env): Promise<ProxyAuthorization> {
+  const token = bearerToken(request) || "";
+  if (!token) {
+    return { ok: false };
   }
 
-  return timingSafeEqual(bearerToken(request) || "", proxyApiKey);
+  const settings = await getSettings(env);
+  for (const gatewayKey of settings.gatewayKeys || []) {
+    if (timingSafeEqual(token, gatewayKey.key)) {
+      return { ok: true, channelIds: gatewayKey.channelIds };
+    }
+  }
+
+  if (settings.proxyApiKey && timingSafeEqual(token, settings.proxyApiKey)) {
+    return { ok: true };
+  }
+
+  if (env.PROXY_API_KEY && timingSafeEqual(token, env.PROXY_API_KEY)) {
+    return { ok: true };
+  }
+
+  return { ok: false };
 }
 
 async function isAdminAuthorized(request: Request, env: Env): Promise<boolean> {
@@ -541,7 +591,8 @@ async function getSettings(env: Env): Promise<RouterSettings> {
   try {
     const parsed = JSON.parse(raw) as Partial<RouterSettings>;
     return {
-      proxyApiKey: typeof parsed.proxyApiKey === "string" && parsed.proxyApiKey.trim() ? parsed.proxyApiKey.trim() : undefined
+      proxyApiKey: typeof parsed.proxyApiKey === "string" && parsed.proxyApiKey.trim() ? parsed.proxyApiKey.trim() : undefined,
+      gatewayKeys: normalizeGatewayKeys(parsed.gatewayKeys)
     };
   } catch {
     return {};
@@ -552,9 +603,50 @@ async function putSettings(env: Env, settings: RouterSettings): Promise<void> {
   await env.CHANNEL_STORE.put(SETTINGS_KV, JSON.stringify(settings));
 }
 
-async function getProxyApiKey(env: Env): Promise<string | undefined> {
-  const settings = await getSettings(env);
-  return settings.proxyApiKey || env.PROXY_API_KEY;
+function normalizeGatewayKeys(value: unknown): GatewayKey[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value.flatMap((item, index) => {
+    if (!item || typeof item !== "object") {
+      return [];
+    }
+
+    const raw = item as Record<string, unknown>;
+    const key = typeof raw.key === "string" && raw.key.trim() ? raw.key.trim() : "";
+    if (!key) {
+      return [];
+    }
+
+    return [{
+      id: typeof raw.id === "string" && raw.id.trim() ? raw.id.trim() : `key-${index + 1}`,
+      name: typeof raw.name === "string" && raw.name.trim() ? raw.name.trim() : undefined,
+      key,
+      channelIds: parseChannelIds(raw.channelIds),
+      createdAt: typeof raw.createdAt === "string" ? raw.createdAt : undefined
+    }];
+  });
+}
+
+function parseChannelIds(value: unknown): string[] | undefined {
+  const rawIds = Array.isArray(value)
+    ? value
+    : typeof value === "string"
+      ? value.split(",")
+      : [];
+  const ids = [...new Set(rawIds.map((id) => typeof id === "string" ? id.trim() : "").filter(Boolean))];
+  return ids.length ? ids : undefined;
+}
+
+function maskGatewayKey(gatewayKey: GatewayKey): Omit<GatewayKey, "key"> & { keyPreview: string } {
+  return {
+    id: gatewayKey.id,
+    name: gatewayKey.name,
+    keyPreview: maskSecret(gatewayKey.key),
+    channelIds: gatewayKey.channelIds,
+    createdAt: gatewayKey.createdAt
+  };
 }
 
 function bearerToken(request: Request): string | null {
@@ -947,8 +1039,9 @@ function adminPage(): string {
 
     .form-grid {
       display: grid;
-      grid-template-columns: minmax(220px, 1fr) minmax(180px, 0.7fr) minmax(240px, 1fr);
-      gap: 10px;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 12px;
+      align-items: end;
     }
 
     .form-grid .wide {
@@ -957,6 +1050,11 @@ function adminPage(): string {
 
     .form-grid .span-2 {
       grid-column: span 2;
+    }
+
+    .form-grid .form-action {
+      align-self: end;
+      justify-content: flex-start;
     }
 
     .mini-textarea {
@@ -1139,10 +1237,15 @@ function adminPage(): string {
           proxyKeyTitle: "Gateway API key",
           proxyKeyHint: "External clients use this key to call /v1.",
           proxyKeyInput: "New API key",
+          proxyKeyName: "Key name",
+          proxyKeyChannels: "Allowed channel IDs",
+          proxyKeyChannelsHint: "Comma separated, empty means all channels.",
           generateProxyKey: "Generate",
+          copyProxyKey: "Copy key",
           saveProxyKey: "Save key",
           proxyKeyGenerated: "Generated locally. Save it before use.",
           proxyKeySaved: "Gateway API key saved. Copy it into your external client.",
+          proxyKeyCopied: "Gateway API key copied.",
           quickAdd: "Quick add channels",
           quickAddHint: "Choose a template, paste one or more API keys, then generate channels.",
           generateChannels: "Generate channels",
@@ -1175,10 +1278,15 @@ function adminPage(): string {
           proxyKeyTitle: "网关调用 Key",
           proxyKeyHint: "外部客户端用这个 Key 调用 /v1。",
           proxyKeyInput: "新的 API Key",
+          proxyKeyName: "Key 名称",
+          proxyKeyChannels: "允许的渠道 ID",
+          proxyKeyChannelsHint: "逗号分隔，留空表示允许所有渠道。",
           generateProxyKey: "生成",
+          copyProxyKey: "复制 Key",
           saveProxyKey: "保存 Key",
           proxyKeyGenerated: "已在本地生成，使用前请先保存。",
           proxyKeySaved: "网关调用 Key 已保存。把它填到外部客户端里使用。",
+          proxyKeyCopied: "网关调用 Key 已复制。",
           quickAdd: "快速添加渠道",
           quickAddHint: "选择模板，粘贴一个或多个 API Key，然后生成渠道。",
           generateChannels: "生成渠道",
@@ -1249,8 +1357,24 @@ function adminPage(): string {
         setBox("#proxyKeyStatus", fallbackMessages[currentLang()].proxyKeyGenerated, "ok");
       };
 
+      window.copyGatewayKey = async function () {
+        const input = document.querySelector("#proxyApiKey");
+        const value = input && input.value ? input.value.trim() : "";
+        if (!value) {
+          setBox("#proxyKeyStatus", currentLang() === "zh" ? "请先生成或输入 API Key。" : "Generate or enter an API key first.", "error");
+          return;
+        }
+        try {
+          await navigator.clipboard.writeText(value);
+        } catch {}
+        if (input) input.select();
+        setBox("#proxyKeyStatus", fallbackMessages[currentLang()].proxyKeyCopied, "ok");
+      };
+
       window.saveGatewayKey = async function () {
         const input = document.querySelector("#proxyApiKey");
+        const nameInput = document.querySelector("#proxyKeyName");
+        const channelsInput = document.querySelector("#proxyKeyChannels");
         const proxyApiKey = input && input.value ? input.value.trim() : "";
         if (!proxyApiKey) {
           setBox("#proxyKeyStatus", currentLang() === "zh" ? "请先生成或输入 API Key。" : "Generate or enter an API key first.", "error");
@@ -1261,7 +1385,11 @@ function adminPage(): string {
             method: "PUT",
             credentials: "same-origin",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ proxyApiKey })
+            body: JSON.stringify({
+              proxyApiKey,
+              name: nameInput && nameInput.value ? nameInput.value.trim() : "",
+              channelIds: channelsInput && channelsInput.value ? channelsInput.value.trim() : ""
+            })
           });
           const data = await response.json().catch(() => ({}));
           if (!response.ok) throw new Error(data.error || "Request failed with " + response.status);
@@ -1321,14 +1449,25 @@ function adminPage(): string {
           <div class="subtle" data-i18n="proxyKeyHint">External clients use this key to call /v1.</div>
         </div>
         <label>
+          <span data-i18n="proxyKeyName">Key name</span>
+          <input id="proxyKeyName" type="text" autocomplete="off" placeholder="default, nvidia-only">
+        </label>
+        <label>
           <span data-i18n="proxyKeyInput">New API key</span>
           <input id="proxyApiKey" type="text" autocomplete="off" placeholder="sk-router-...">
         </label>
+        <label>
+          <span data-i18n="proxyKeyChannels">Allowed channel IDs</span>
+          <input id="proxyKeyChannels" type="text" autocomplete="off" placeholder="nvidia, deepseek">
+          <span class="subtle" data-i18n="proxyKeyChannelsHint">Comma separated, empty means all channels.</span>
+        </label>
         <div class="row">
           <button id="generateProxyKeyBtn" type="button" data-i18n="generateProxyKey" onclick="window.generateGatewayKey && window.generateGatewayKey()">Generate</button>
+          <button id="copyProxyKeyBtn" type="button" data-i18n="copyProxyKey" onclick="window.copyGatewayKey && window.copyGatewayKey()">Copy key</button>
           <button id="saveProxyKeyBtn" class="primary" type="button" data-i18n="saveProxyKey" onclick="window.saveGatewayKey && window.saveGatewayKey()">Save key</button>
         </div>
         <div id="proxyKeyStatus" class="status" data-i18n="proxyKeyUnknown">Not loaded.</div>
+        <div id="gatewayKeyList" class="status"></div>
       </section>
     </div>
 
@@ -1369,11 +1508,12 @@ function adminPage(): string {
             <span data-i18n="baseUrl">Base URL</span>
             <input id="channelBaseUrl" type="url" placeholder="https://api.example.com/v1">
           </label>
+          <div></div>
           <label class="span-2">
             <span data-i18n="modelsInput">Models</span>
             <input id="channelModels" type="text" placeholder="model-a, model-b">
           </label>
-          <div class="row">
+          <div class="row form-action">
             <button id="fetchModelsBtn" type="button" data-i18n="fetchModels">Fetch models</button>
           </div>
           <label class="span-2">
@@ -1456,8 +1596,11 @@ function adminPage(): string {
     const channelApiKeysInput = document.querySelector("#channelApiKeys");
     const channelEnabledInput = document.querySelector("#channelEnabled");
     const modelPicker = document.querySelector("#modelPicker");
+    const proxyKeyNameInput = document.querySelector("#proxyKeyName");
+    const proxyKeyChannelsInput = document.querySelector("#proxyKeyChannels");
     const proxyApiKeyInput = document.querySelector("#proxyApiKey");
     const proxyKeyStatus = document.querySelector("#proxyKeyStatus");
+    const gatewayKeyList = document.querySelector("#gatewayKeyList");
     let checkResults = {};
     let lastAppliedTemplateId = "";
     let fetchedModels = [];
@@ -1531,12 +1674,19 @@ function adminPage(): string {
         cursorScopes: "Cursor scopes",
         proxyKeyTitle: "Gateway API key",
         proxyKeyHint: "External clients use this key to call /v1.",
+        proxyKeyName: "Key name",
         proxyKeyInput: "New API key",
+        proxyKeyChannels: "Allowed channel IDs",
+        proxyKeyChannelsHint: "Comma separated, empty means all channels.",
         generateProxyKey: "Generate",
+        copyProxyKey: "Copy key",
         saveProxyKey: "Save key",
         proxyKeyUnknown: "Not loaded.",
         proxyKeySaved: "Gateway API key saved. Copy it into your external client.",
+        proxyKeyCopied: "Gateway API key copied.",
         proxyKeyGenerated: "Generated locally. Save it before use.",
+        gatewayKeysEmpty: "No saved gateway keys.",
+        allChannels: "all channels",
         proxyKeyStatusAdmin: "Configured in admin: {preview}",
         proxyKeyStatusEnv: "Using PROXY_API_KEY environment secret: {preview}",
         proxyKeyStatusNone: "No gateway API key configured. Public /v1 calls are open.",
@@ -1583,8 +1733,8 @@ function adminPage(): string {
         healthOk: "Worker health check passed.",
         healthBad: "Health check returned unexpected data.",
         templateApplied: "{name} template applied.",
-        templateAdded: "Added {added} channel(s), skipped {skipped} duplicate key(s). Review them, then save.",
-        noNewKeys: "No new channels added. These keys already exist for this Base URL.",
+        templateAdded: "Added {added} channel(s), updated {updated}, skipped {skipped}. Review them, then save.",
+        noNewKeys: "No new channels added. Existing matching keys were updated with the selected models.",
         apiKeysRequired: "Paste at least one API key.",
         modelsLoaded: "Models loaded. Click a model to add it.",
         noModelsFound: "No models were returned by this channel.",
@@ -1608,12 +1758,19 @@ function adminPage(): string {
         cursorScopes: "游标范围",
         proxyKeyTitle: "网关调用 Key",
         proxyKeyHint: "外部客户端用这个 Key 调用 /v1。",
+        proxyKeyName: "Key 名称",
         proxyKeyInput: "新的 API Key",
+        proxyKeyChannels: "允许的渠道 ID",
+        proxyKeyChannelsHint: "逗号分隔，留空表示允许所有渠道。",
         generateProxyKey: "生成",
+        copyProxyKey: "复制 Key",
         saveProxyKey: "保存 Key",
         proxyKeyUnknown: "尚未加载。",
         proxyKeySaved: "网关调用 Key 已保存。把它填到外部客户端里使用。",
+        proxyKeyCopied: "网关调用 Key 已复制。",
         proxyKeyGenerated: "已在本地生成，使用前请先保存。",
+        gatewayKeysEmpty: "还没有保存网关 Key。",
+        allChannels: "全部渠道",
         proxyKeyStatusAdmin: "后台已配置：{preview}",
         proxyKeyStatusEnv: "正在使用 PROXY_API_KEY 环境密钥：{preview}",
         proxyKeyStatusNone: "还没有配置网关调用 Key，公网 /v1 调用将不鉴权。",
@@ -1660,8 +1817,8 @@ function adminPage(): string {
         healthOk: "Worker 健康检查通过。",
         healthBad: "健康检查返回异常。",
         templateApplied: "已应用 {name} 模板。",
-        templateAdded: "已添加 {added} 个渠道，跳过 {skipped} 个重复 Key。请检查后保存。",
-        noNewKeys: "没有新增渠道。这些 Key 在当前 Base URL 下已经存在。",
+        templateAdded: "已添加 {added} 个渠道，更新 {updated} 个，跳过 {skipped} 个。请检查后保存。",
+        noNewKeys: "没有新增渠道。已把当前选择的模型合并到匹配的现有 Key。",
         apiKeysRequired: "请至少粘贴一个 API Key。",
         modelsLoaded: "模型已加载。点击模型即可添加。",
         noModelsFound: "该渠道没有返回模型列表。",
@@ -1839,6 +1996,7 @@ function adminPage(): string {
       });
 
       proxyApiKeyInput.value = "";
+      renderGatewayKeys(settings.gatewayKeys || []);
       const preview = settings.proxyApiKeyPreview || "";
       if (settings.source === "admin") {
         setProxyKeyStatus(t("proxyKeyStatusAdmin").replace("{preview}", preview), "ok");
@@ -1847,6 +2005,18 @@ function adminPage(): string {
       } else {
         setProxyKeyStatus(t("proxyKeyStatusNone"), "error");
       }
+    }
+
+    function renderGatewayKeys(keys) {
+      if (!keys.length) {
+        gatewayKeyList.textContent = t("gatewayKeysEmpty");
+        return;
+      }
+
+      gatewayKeyList.innerHTML = keys.map((item) => {
+        const scope = Array.isArray(item.channelIds) && item.channelIds.length ? item.channelIds.join(", ") : t("allChannels");
+        return '<div><b>' + escapeHtml(item.name || item.id) + '</b> <code>' + escapeHtml(item.keyPreview || "") + '</code><div class="subtle">' + escapeHtml(scope) + '</div></div>';
+      }).join("");
     }
 
     function generateProxyApiKey() {
@@ -1858,6 +2028,19 @@ function adminPage(): string {
       setProxyKeyStatus(t("proxyKeyGenerated"), "ok");
     }
 
+    async function copyProxyApiKey() {
+      const proxyApiKey = proxyApiKeyInput.value.trim();
+      if (!proxyApiKey) {
+        throw new Error(t("proxyKeyRequired"));
+      }
+
+      try {
+        await navigator.clipboard.writeText(proxyApiKey);
+      } catch {}
+      proxyApiKeyInput.select();
+      setProxyKeyStatus(t("proxyKeyCopied"), "ok");
+    }
+
     async function saveProxyApiKey() {
       const proxyApiKey = proxyApiKeyInput.value.trim();
       if (!proxyApiKey) {
@@ -1867,9 +2050,14 @@ function adminPage(): string {
       const settings = await requestJson("/admin/settings", {
         method: "PUT",
         headers: authHeaders({ "Content-Type": "application/json" }),
-        body: JSON.stringify({ proxyApiKey })
+        body: JSON.stringify({
+          proxyApiKey,
+          name: proxyKeyNameInput.value.trim(),
+          channelIds: proxyKeyChannelsInput.value.trim()
+        })
       });
       proxyApiKeyInput.select();
+      renderGatewayKeys(settings.gatewayKeys || []);
       setProxyKeyStatus(t("proxyKeySaved") + " " + t("proxyKeyStatusAdmin").replace("{preview}", settings.proxyApiKeyPreview || ""), "ok");
     }
 
@@ -2003,15 +2191,29 @@ function adminPage(): string {
       const models = selectedModels();
       const baseUrl = channelBaseUrlInput.value.trim();
       let added = 0;
+      let updated = 0;
       let skipped = 0;
 
       apiKeys.forEach((apiKey, index) => {
         const fingerprint = normalizeBaseUrl(baseUrl) + "::" + apiKey;
-        if (existingKeys.has(fingerprint) || pastedKeys.has(fingerprint)) {
+        if (pastedKeys.has(fingerprint)) {
           skipped += 1;
           return;
         }
         pastedKeys.add(fingerprint);
+
+        if (existingKeys.has(fingerprint)) {
+          const existing = channels.find((channel) => channelFingerprint(channel) === fingerprint);
+          if (existing) {
+            existing.name = channelNameInput.value.trim() || existing.name;
+            existing.enabled = channelEnabledInput.checked;
+            existing.models = [...new Set([...(Array.isArray(existing.models) ? existing.models : []), ...models])];
+            updated += 1;
+          } else {
+            skipped += 1;
+          }
+          return;
+        }
 
         let nextId = apiKeys.length === 1 ? prefix : prefix + "-" + (index + 1);
         let suffix = 2;
@@ -2032,7 +2234,7 @@ function adminPage(): string {
         });
       });
 
-      if (added === 0) {
+      if (added === 0 && updated === 0) {
         setStatus(t("noNewKeys"), "error");
         return;
       }
@@ -2040,7 +2242,7 @@ function adminPage(): string {
       editor.value = JSON.stringify(channels, null, 2);
       renderChannels(channels);
       channelApiKeysInput.value = "";
-      setStatus(t("templateAdded").replace("{added}", added).replace("{skipped}", skipped), "ok");
+      setStatus(t("templateAdded").replace("{added}", added).replace("{updated}", updated).replace("{skipped}", skipped), "ok");
     }
 
     async function checkChannels() {
@@ -2067,6 +2269,10 @@ function adminPage(): string {
       if (!proxyApiKeyInput.value) {
         generateProxyApiKey();
       }
+    });
+
+    document.querySelector("#copyProxyKeyBtn").addEventListener("click", () => {
+      copyProxyApiKey().catch((error) => setProxyKeyStatus(error.message, "error"));
     });
 
     document.querySelector("#saveProxyKeyBtn").addEventListener("click", () => {
