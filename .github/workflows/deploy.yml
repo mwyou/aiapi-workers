@@ -23,13 +23,24 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Inject Cloudflare config
+        run: |
+          node -e "const fs=require('fs'); const p='wrangler.jsonc'; let s=fs.readFileSync(p,'utf8'); s=s.replace('REPLACE_WITH_KV_NAMESPACE_ID', process.env.CLOUDFLARE_KV_NAMESPACE_ID); s=s.replace(/\"name\"\\s*:\\s*\"[^\"]+\"/, '\"name\": \"' + (process.env.WORKER_NAME || 'apioai') + '\"'); fs.writeFileSync(p,s);"
+        env:
+          CLOUDFLARE_KV_NAMESPACE_ID: ${{ secrets.CLOUDFLARE_KV_NAMESPACE_ID }}
+          WORKER_NAME: ${{ vars.WORKER_NAME || secrets.WORKER_NAME }}
+
       - name: Type check
         run: npm run check
 
       - name: Build dry run
         run: npm run build
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
 
       - name: Deploy to Cloudflare Workers
         run: npx wrangler deploy
         env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
