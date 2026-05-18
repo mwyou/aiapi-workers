@@ -90,8 +90,10 @@ https://你的-worker.workers.dev/admin
 - 查看渠道数量、启用数量
 - 查看每个模型的轮询游标
 - 执行 `/health` 检查
+- 检测每个渠道是否可用
 
 后台页面读取完整 `apiKey` 会调用 `/admin/channels/raw`，这个接口同样需要 `ADMIN_TOKEN`。
+渠道可用性检测会调用 `/admin/channels/check`，Worker 会依次请求每个渠道的 OpenAI-compatible `/models`，并返回 HTTP 状态、耗时和错误信息。
 
 ## 本地运行
 
@@ -118,13 +120,21 @@ npx wrangler deploy
 
 需要在 GitHub 仓库里添加 Secret:
 
+- `CLOUDFLARE_ACCOUNT_ID`: Cloudflare 账户 ID。
 - `CLOUDFLARE_API_TOKEN`: Cloudflare API Token，需要有部署 Workers 的权限。
+- `CLOUDFLARE_KV_NAMESPACE_ID`: `CHANNEL_STORE` 的 KV namespace id。
 
-第一次部署前仍然要先创建 KV namespace，并把 id 写进 `wrangler.jsonc`:
+Worker 默认名称是 `apioai`。如果要改名，可以在 GitHub 仓库的 Variables 或 Secrets 里添加:
+
+- `WORKER_NAME`: 自定义 Worker 名称，例如 `newapi-router`。
+
+第一次部署前仍然要先创建 KV namespace:
 
 ```powershell
 npx wrangler kv namespace create CHANNEL_STORE
 ```
+
+如果使用 GitHub Actions 部署，不需要把真实 KV id 提交到仓库，workflow 会用 `CLOUDFLARE_KV_NAMESPACE_ID` 自动替换 `wrangler.jsonc` 里的占位符。
 
 生产环境 secrets 也要写入 Cloudflare Workers，而不是 GitHub Actions:
 

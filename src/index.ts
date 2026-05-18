@@ -14,6 +14,15 @@ type Channel = {
   models?: string[];
 };
 
+type ChannelCheck = {
+  id: string;
+  name?: string;
+  ok: boolean;
+  status?: number;
+  latencyMs: number;
+  error?: string;
+};
+
 const CHANNELS_KV = "router:channels";
 const CURSOR_PREFIX = "router:cursor:";
 const RETRY_STATUSES = new Set([401, 403, 408, 409, 425, 429, 500, 502, 503, 504]);
@@ -60,6 +69,16 @@ async function handleAdmin(request: Request, env: Env, url: URL): Promise<Respon
     return json({ count: channels.length, channels });
   }
 
+  if (url.pathname === "/admin/channels/check" && request.method === "POST") {
+    const channels = await getChannels(env);
+    const results = await Promise.all(channels.map((channel) => checkChannel(channel)));
+    return json({
+      ok: results.every((result) => result.ok),
+      count: results.length,
+      results
+    });
+  }
+
   if ((url.pathname === "/admin/channels" || url.pathname === "/admin/providers") && request.method === "GET") {
     const channels = await getChannels(env);
     return json({ count: channels.length, channels: channels.map(maskChannel) });
@@ -92,6 +111,39 @@ async function handleAdmin(request: Request, env: Env, url: URL): Promise<Respon
   }
 
   return json({ error: "Not found" }, 404);
+}
+
+async function checkChannel(channel: Channel): Promise<ChannelCheck> {
+  const started = Date.now();
+  const modelsUrl = `${channel.baseUrl.replace(/\/+$/, "")}/models`;
+
+  try {
+    const response = await fetch(modelsUrl, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${channel.apiKey}`,
+        Accept: "application/json"
+      }
+    });
+
+    await response.body?.cancel();
+    return {
+      id: channel.id,
+      name: channel.name,
+      ok: response.ok,
+      status: response.status,
+      latencyMs: Date.now() - started,
+      error: response.ok ? undefined : `HTTP ${response.status}`
+    };
+  } catch (error) {
+    return {
+      id: channel.id,
+      name: channel.name,
+      ok: false,
+      latencyMs: Date.now() - started,
+      error: error instanceof Error ? error.message : "Request failed"
+    };
+  }
 }
 
 async function proxyToChannel(request: Request, env: Env, inputUrl: URL): Promise<Response> {
@@ -580,6 +632,16 @@ function adminPage(): string {
       color: #667085;
     }
 
+    .badge.ok {
+      background: #eaf7f1;
+      color: var(--ok);
+    }
+
+    .badge.error {
+      background: #fff0f0;
+      color: var(--danger);
+    }
+
     @media (max-width: 820px) {
       .header-inner {
         align-items: flex-start;
@@ -668,7 +730,10 @@ function adminPage(): string {
       <section class="panel stack">
         <div class="row">
           <h2 style="margin:0;font-size:16px;">Channels</h2>
-          <button id="refreshBtn" type="button">Refresh</button>
+          <div class="row" style="justify-content:flex-end;">
+            <button id="checkChannelsBtn" type="button">Check channels</button>
+            <button id="refreshBtn" type="button">Refresh</button>
+          </div>
         </div>
         <div class="table-wrap">
           <table>
@@ -678,10 +743,11 @@ function adminPage(): string {
                 <th>Base URL</th>
                 <th>Models</th>
                 <th>Status</th>
+                <th>Check</th>
               </tr>
             </thead>
             <tbody id="channelRows">
-              <tr><td colspan="4" class="subtle">No data loaded.</td></tr>
+              <tr><td colspan="5" class="subtle">No data loaded.</td></tr>
             </tbody>
           </table>
         </div>
@@ -706,6 +772,7 @@ function adminPage(): string {
     const channelCount = document.querySelector("#channelCount");
     const enabledCount = document.querySelector("#enabledCount");
     const cursorCount = document.querySelector("#cursorCount");
+    let checkResults = {};
 
     tokenInput.value = localStorage.getItem("routerAdminToken") || "";
 
@@ -740,20 +807,31 @@ function adminPage(): string {
       enabledCount.textContent = String(channels.filter((item) => item.enabled !== false).length);
 
       if (!channels.length) {
-        channelRows.innerHTML = '<tr><td colspan="4" class="subtle">No channels configured.</td></tr>';
+        channelRows.innerHTML = '<tr><td colspan="5" class="subtle">No channels configured.</td></tr>';
         return;
       }
 
       channelRows.innerHTML = channels.map((item) => {
         const models = Array.isArray(item.models) && item.models.length ? item.models.join(", ") : "all models";
         const status = item.enabled === false ? '<span class="badge off">disabled</span>' : '<span class="badge">enabled</span>';
+        const check = checkResults[item.id];
+        const checkHtml = check ? renderCheck(check) : '<span class="subtle">not checked</span>';
         return '<tr>' +
           '<td><code>' + escapeHtml(item.id || "") + '</code></td>' +
           '<td><code>' + escapeHtml(item.baseUrl || "") + '</code></td>' +
           '<td>' + escapeHtml(models) + '</td>' +
           '<td>' + status + '</td>' +
+          '<td>' + checkHtml + '</td>' +
         '</tr>';
       }).join("");
+    }
+
+    function renderCheck(result) {
+      const label = result.ok ? "ok" : "failed";
+      const klass = result.ok ? "ok" : "error";
+      const detail = result.status ? "HTTP " + result.status + ", " + result.latencyMs + "ms" : result.latencyMs + "ms";
+      const error = result.error ? " - " + result.error : "";
+      return '<span class="badge ' + klass + '">' + label + '</span><div class="subtle">' + escapeHtml(detail + error) + '</div>';
     }
 
     function escapeHtml(value) {
@@ -798,6 +876,18 @@ function adminPage(): string {
       setStatus("Channels saved.", "ok");
     }
 
+    async function checkChannels() {
+      setStatus("Checking channels...", "");
+      const data = await requestJson("/admin/channels/check", {
+        method: "POST",
+        headers: authHeaders()
+      });
+      checkResults = Object.fromEntries((data.results || []).map((result) => [result.id, result]));
+      const channels = JSON.parse(editor.value);
+      renderChannels(Array.isArray(channels) ? channels : []);
+      setStatus(data.ok ? "All channels are available." : "Some channels failed the availability check.", data.ok ? "ok" : "error");
+    }
+
     document.querySelector("#loadBtn").addEventListener("click", () => {
       loadAll().catch((error) => setStatus(error.message, "error"));
     });
@@ -808,6 +898,10 @@ function adminPage(): string {
 
     document.querySelector("#saveBtn").addEventListener("click", () => {
       saveChannels().catch((error) => setStatus(error.message, "error"));
+    });
+
+    document.querySelector("#checkChannelsBtn").addEventListener("click", () => {
+      checkChannels().catch((error) => setStatus(error.message, "error"));
     });
 
     document.querySelector("#clearBtn").addEventListener("click", () => {
