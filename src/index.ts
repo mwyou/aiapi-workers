@@ -134,6 +134,10 @@ async function handleAdmin(request: Request, env: Env, url: URL): Promise<Respon
     });
   }
 
+  if (url.pathname === "/admin/models" && request.method === "POST") {
+    return fetchChannelModels(request);
+  }
+
   if ((url.pathname === "/admin/channels" || url.pathname === "/admin/providers") && request.method === "GET") {
     const channels = await getChannels(env);
     return json({ count: channels.length, channels: channels.map(maskChannel) });
@@ -254,6 +258,43 @@ async function checkChannel(channel: Channel): Promise<ChannelCheck> {
       latencyMs: Date.now() - started,
       error: error instanceof Error ? error.message : "Request failed"
     };
+  }
+}
+
+async function fetchChannelModels(request: Request): Promise<Response> {
+  const body = await request.json<{ baseUrl?: unknown; apiKey?: unknown }>().catch(() => null);
+  if (!body || typeof body.baseUrl !== "string" || typeof body.apiKey !== "string") {
+    return json({ error: "Expected JSON body: { \"baseUrl\": \"...\", \"apiKey\": \"...\" }" }, 400);
+  }
+
+  const baseUrl = body.baseUrl.trim().replace(/\/+$/, "");
+  const apiKey = body.apiKey.trim();
+  if (!baseUrl || !apiKey) {
+    return json({ error: "baseUrl and apiKey are required" }, 400);
+  }
+
+  try {
+    const response = await fetch(`${baseUrl}/models`, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        Accept: "application/json"
+      }
+    });
+    const payload = (await response.json().catch(() => null)) as { data?: unknown } | null;
+    if (!response.ok) {
+      return json({ error: `HTTP ${response.status}`, status: response.status }, response.status);
+    }
+
+    const data = Array.isArray(payload?.data) ? payload.data : [];
+    const models = data
+      .map((item) => (item && typeof item === "object" && "id" in item ? (item as { id?: unknown }).id : null))
+      .filter((id): id is string => typeof id === "string" && id.trim().length > 0)
+      .sort((a, b) => a.localeCompare(b));
+
+    return json({ ok: true, count: models.length, models });
+  } catch (error) {
+    return json({ error: error instanceof Error ? error.message : "Failed to fetch models" }, 502);
   }
 }
 
@@ -824,6 +865,51 @@ function adminPage(): string {
       gap: 10px;
     }
 
+    .form-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .form-grid .wide {
+      grid-column: 1 / -1;
+    }
+
+    .mini-textarea {
+      min-height: 92px;
+    }
+
+    .checkline {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      font-weight: 650;
+    }
+
+    .checkline input {
+      width: 16px;
+      height: 16px;
+      padding: 0;
+    }
+
+    .model-picker {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .model-chip {
+      min-height: 30px;
+      height: auto;
+      max-width: 100%;
+      justify-content: flex-start;
+      overflow-wrap: anywhere;
+      border-color: #c9d5ea;
+      background: #f8fbff;
+      color: #344054;
+      font-weight: 650;
+    }
+
     .metric {
       display: flex;
       justify-content: space-between;
@@ -907,6 +993,10 @@ function adminPage(): string {
       main {
         grid-template-columns: 1fr;
       }
+
+      .form-grid {
+        grid-template-columns: 1fr;
+      }
     }
 
     @media (max-width: 520px) {
@@ -966,6 +1056,51 @@ function adminPage(): string {
       <section class="panel stack">
         <div class="row">
           <div>
+            <h2 style="margin:0;font-size:16px;" data-i18n="quickAdd">Quick add channels</h2>
+            <div class="subtle" data-i18n="quickAddHint">Choose a template, paste one or more API keys, then generate channels.</div>
+          </div>
+          <button id="generateChannelsBtn" class="primary" type="button" data-i18n="generateChannels">Generate channels</button>
+        </div>
+        <div class="form-grid">
+          <label>
+            <span data-i18n="templateLabel">Channel template</span>
+            <select id="templateSelect"></select>
+          </label>
+          <label>
+            <span data-i18n="channelIdPrefix">ID prefix</span>
+            <input id="channelIdPrefix" type="text" placeholder="deepseek">
+          </label>
+          <label>
+            <span data-i18n="channelName">Channel name</span>
+            <input id="channelName" type="text" placeholder="DeepSeek">
+          </label>
+          <label>
+            <span data-i18n="baseUrl">Base URL</span>
+            <input id="channelBaseUrl" type="url" placeholder="https://api.example.com/v1">
+          </label>
+          <label class="wide">
+            <span data-i18n="modelsInput">Models</span>
+            <input id="channelModels" type="text" placeholder="model-a, model-b">
+          </label>
+          <div class="row wide">
+            <button id="fetchModelsBtn" type="button" data-i18n="fetchModels">Fetch models</button>
+            <span class="subtle" data-i18n="fetchModelsHint">Uses Base URL and the first API key.</span>
+          </div>
+          <div id="modelPicker" class="model-picker wide"></div>
+          <label class="wide">
+            <span data-i18n="apiKeysInput">API keys</span>
+            <textarea id="channelApiKeys" class="mini-textarea" spellcheck="false" placeholder="One API key per line"></textarea>
+          </label>
+          <label class="checkline">
+            <input id="channelEnabled" type="checkbox" checked>
+            <span data-i18n="enabled">Enabled</span>
+          </label>
+        </div>
+      </section>
+
+      <section class="panel stack">
+        <div class="row">
+          <div>
             <h2 style="margin:0;font-size:16px;" data-i18n="channelJson">Channel JSON</h2>
             <div class="subtle" data-i18n="channelJsonHint">Edit the full channel array. Saving resets the default cursor.</div>
           </div>
@@ -981,13 +1116,6 @@ function adminPage(): string {
     "models": ["meta/llama-3.1-70b-instruct"]
   }
 ]</textarea>
-        <div class="row">
-          <label style="flex:1;">
-            <span data-i18n="templateLabel">Channel template</span>
-            <select id="templateSelect"></select>
-          </label>
-          <button id="appendTemplateBtn" type="button" data-i18n="appendTemplate">Append template</button>
-        </div>
       </section>
 
       <section class="panel stack">
@@ -1035,6 +1163,13 @@ function adminPage(): string {
     const enabledCount = document.querySelector("#enabledCount");
     const cursorCount = document.querySelector("#cursorCount");
     const templateSelect = document.querySelector("#templateSelect");
+    const channelIdPrefixInput = document.querySelector("#channelIdPrefix");
+    const channelNameInput = document.querySelector("#channelName");
+    const channelBaseUrlInput = document.querySelector("#channelBaseUrl");
+    const channelModelsInput = document.querySelector("#channelModels");
+    const channelApiKeysInput = document.querySelector("#channelApiKeys");
+    const channelEnabledInput = document.querySelector("#channelEnabled");
+    const modelPicker = document.querySelector("#modelPicker");
     let checkResults = {};
     const channelTemplates = [
       {
@@ -1104,10 +1239,18 @@ function adminPage(): string {
         channels: "Channels",
         enabled: "Enabled",
         cursorScopes: "Cursor scopes",
+        quickAdd: "Quick add channels",
+        quickAddHint: "Choose a template, paste one or more API keys, then generate channels.",
+        generateChannels: "Generate channels",
+        channelIdPrefix: "ID prefix",
+        channelName: "Channel name",
+        modelsInput: "Models",
+        apiKeysInput: "API keys",
+        fetchModels: "Fetch models",
+        fetchModelsHint: "Uses Base URL and the first API key.",
         channelJson: "Channel JSON",
         channelJsonHint: "Edit the full channel array. Saving resets the default cursor.",
         templateLabel: "Channel template",
-        appendTemplate: "Append template",
         saveChannels: "Save channels",
         checkChannels: "Check channels",
         refresh: "Refresh",
@@ -1134,7 +1277,10 @@ function adminPage(): string {
         someFailed: "Some channels failed the availability check.",
         healthOk: "Worker health check passed.",
         healthBad: "Health check returned unexpected data.",
-        templateAdded: "Template appended. Review the API key and model list, then save.",
+        templateAdded: "Channels generated. Review them, then save.",
+        apiKeysRequired: "Paste at least one API key.",
+        modelsLoaded: "Models loaded. Click a model to add it.",
+        noModelsFound: "No models were returned by this channel.",
         invalidJson: "Editor must contain a JSON array."
       },
       zh: {
@@ -1152,10 +1298,18 @@ function adminPage(): string {
         channels: "渠道",
         enabled: "启用",
         cursorScopes: "游标范围",
+        quickAdd: "快速添加渠道",
+        quickAddHint: "选择模板，粘贴一个或多个 API Key，然后生成渠道。",
+        generateChannels: "生成渠道",
+        channelIdPrefix: "ID 前缀",
+        channelName: "渠道名称",
+        modelsInput: "模型",
+        apiKeysInput: "API Key",
+        fetchModels: "获取模型",
+        fetchModelsHint: "使用 Base URL 和第一条 API Key。",
         channelJson: "渠道 JSON",
         channelJsonHint: "编辑完整渠道数组。保存后会重置默认游标。",
         templateLabel: "渠道模板",
-        appendTemplate: "追加模板",
         saveChannels: "保存渠道",
         checkChannels: "检测渠道",
         refresh: "刷新",
@@ -1182,7 +1336,10 @@ function adminPage(): string {
         someFailed: "部分渠道检测失败。",
         healthOk: "Worker 健康检查通过。",
         healthBad: "健康检查返回异常。",
-        templateAdded: "模板已追加。请检查 API Key 和模型列表，然后保存。",
+        templateAdded: "渠道已生成。请检查后保存。",
+        apiKeysRequired: "请至少粘贴一个 API Key。",
+        modelsLoaded: "模型已加载。点击模型即可添加。",
+        noModelsFound: "该渠道没有返回模型列表。",
         invalidJson: "编辑器内容必须是 JSON 数组。"
       }
     };
@@ -1202,9 +1359,25 @@ function adminPage(): string {
     }
 
     templateSelect.innerHTML = channelTemplates.map((template) => '<option value="' + escapeHtml(template.id) + '">' + escapeHtml(template.label) + '</option>').join("");
+    applyTemplateFields();
 
     function authHeaders(extra = {}) {
       return { ...extra };
+    }
+
+    function selectedTemplate() {
+      return channelTemplates.find((item) => item.id === templateSelect.value) || channelTemplates[0];
+    }
+
+    function applyTemplateFields() {
+      const template = selectedTemplate();
+      const channel = template.channel;
+      channelIdPrefixInput.value = channel.id;
+      channelNameInput.value = channel.name || template.label;
+      channelBaseUrlInput.value = channel.baseUrl;
+      channelModelsInput.value = (channel.models || []).join(", ");
+      channelEnabledInput.checked = channel.enabled !== false;
+      modelPicker.innerHTML = "";
     }
 
     function setStatus(message, type = "") {
@@ -1220,6 +1393,48 @@ function adminPage(): string {
       }
 
       return data;
+    }
+
+    function currentApiKeys() {
+      return channelApiKeysInput.value.split(/\r?\n/).map((key) => key.trim()).filter(Boolean);
+    }
+
+    function selectedModels() {
+      return channelModelsInput.value.split(",").map((model) => model.trim()).filter(Boolean);
+    }
+
+    function setSelectedModels(models) {
+      channelModelsInput.value = [...new Set(models)].join(", ");
+    }
+
+    function addModel(model) {
+      setSelectedModels([...selectedModels(), model]);
+    }
+
+    function renderModelPicker(models) {
+      modelPicker.innerHTML = models.map((model) => '<button class="model-chip" type="button" data-model="' + escapeHtml(model) + '">' + escapeHtml(model) + '</button>').join("");
+      modelPicker.querySelectorAll("[data-model]").forEach((button) => {
+        button.addEventListener("click", () => addModel(button.dataset.model));
+      });
+    }
+
+    async function fetchModels() {
+      const apiKey = currentApiKeys()[0];
+      if (!apiKey) {
+        throw new Error(t("apiKeysRequired"));
+      }
+
+      setStatus(t("checking"), "");
+      const data = await requestJson("/admin/models", {
+        method: "POST",
+        headers: authHeaders({ "Content-Type": "application/json" }),
+        body: JSON.stringify({
+          baseUrl: channelBaseUrlInput.value.trim(),
+          apiKey
+        })
+      });
+      renderModelPicker(data.models || []);
+      setStatus(data.models && data.models.length ? t("modelsLoaded") : t("noModelsFound"), data.models && data.models.length ? "ok" : "");
     }
 
     async function logout() {
@@ -1303,25 +1518,42 @@ function adminPage(): string {
       setStatus(t("saved"), "ok");
     }
 
-    function appendTemplate() {
-      const template = channelTemplates.find((item) => item.id === templateSelect.value) || channelTemplates[0];
+    function generateChannelsFromForm() {
       const channels = JSON.parse(editor.value);
       if (!Array.isArray(channels)) {
         throw new Error(t("invalidJson"));
       }
 
-      const nextChannel = JSON.parse(JSON.stringify(template.channel));
-      const existingIds = new Set(channels.map((item) => item && item.id).filter(Boolean));
-      let nextId = nextChannel.id;
-      let suffix = 2;
-      while (existingIds.has(nextId)) {
-        nextId = nextChannel.id + "-" + suffix;
-        suffix += 1;
+      const apiKeys = currentApiKeys();
+      if (apiKeys.length === 0) {
+        throw new Error(t("apiKeysRequired"));
       }
-      nextChannel.id = nextId;
-      channels.push(nextChannel);
+
+      const existingIds = new Set(channels.map((item) => item && item.id).filter(Boolean));
+      const prefix = channelIdPrefixInput.value.trim() || selectedTemplate().channel.id;
+      const models = selectedModels();
+
+      apiKeys.forEach((apiKey, index) => {
+        let nextId = apiKeys.length === 1 ? prefix : prefix + "-" + (index + 1);
+        let suffix = 2;
+        while (existingIds.has(nextId)) {
+          nextId = prefix + "-" + suffix;
+          suffix += 1;
+        }
+        existingIds.add(nextId);
+        channels.push({
+          id: nextId,
+          name: apiKeys.length === 1 ? channelNameInput.value.trim() : channelNameInput.value.trim() + " " + (index + 1),
+          baseUrl: channelBaseUrlInput.value.trim(),
+          apiKey,
+          enabled: channelEnabledInput.checked,
+          models
+        });
+      });
+
       editor.value = JSON.stringify(channels, null, 2);
       renderChannels(channels);
+      channelApiKeysInput.value = "";
       setStatus(t("templateAdded"), "ok");
     }
 
@@ -1349,12 +1581,20 @@ function adminPage(): string {
       saveChannels().catch((error) => setStatus(error.message, "error"));
     });
 
-    document.querySelector("#appendTemplateBtn").addEventListener("click", () => {
+    templateSelect.addEventListener("change", () => {
+      applyTemplateFields();
+    });
+
+    document.querySelector("#generateChannelsBtn").addEventListener("click", () => {
       try {
-        appendTemplate();
+        generateChannelsFromForm();
       } catch (error) {
         setStatus(error.message, "error");
       }
+    });
+
+    document.querySelector("#fetchModelsBtn").addEventListener("click", () => {
+      fetchModels().catch((error) => setStatus(error.message, "error"));
     });
 
     document.querySelector("#checkChannelsBtn").addEventListener("click", () => {

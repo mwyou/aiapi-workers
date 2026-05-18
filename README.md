@@ -104,6 +104,8 @@ https://你的-worker.workers.dev/admin
 
 - 查看和编辑完整渠道 JSON
 - 从渠道模板追加配置
+- 使用 Base URL 和第一条 API Key 获取模型列表
+- 点击模型标签追加模型，也可以手动输入自定义模型
 - 保存渠道池到 KV
 - 查看渠道数量、启用数量
 - 查看每个模型的轮询游标
@@ -126,7 +128,7 @@ https://你的-worker.workers.dev/admin
 - Alibaba DashScope
 - Custom OpenAI-compatible
 
-模板只会追加到编辑器里，不会自动保存；`apiKey` 会保留为 `REPLACE_WITH_API_KEY`，需要你自己填好后再保存。
+快速添加区支持一行一个 API Key，同渠道多个账号会自动生成多条 channel，并按 `ID prefix` 自动编号。模型可以逗号分隔手动输入，也可以点“获取模型”从上游 `/models` 拉取后点选。
 
 ## 本地运行
 
