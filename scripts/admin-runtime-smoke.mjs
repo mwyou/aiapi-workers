@@ -38,6 +38,9 @@ const output = ts.transpileModule(source, {
     }
 
     querySelectorAll() {
+      if (this.selector === "#gatewayKeyList") {
+        return [new ElementStub("delete-key")];
+      }
       return [];
     }
 
@@ -85,6 +88,14 @@ const output = ts.transpileModule(source, {
     },
     addEventListener() {}
   };
+  const navigator = {
+    language: "en-US",
+    clipboard: {
+      async writeText(value) {
+        window.copiedText = value;
+      }
+    }
+  };
 
   const fetch = async (path, options = {}) => {
     if (path === "/admin/settings" && options.method === "PUT") {
@@ -107,7 +118,7 @@ const output = ts.transpileModule(source, {
     new Function("document", "window", "navigator", "fetch", "crypto", "location", script)(
       document,
       window,
-      { language: "en-US" },
+      navigator,
       fetch,
       crypto,
       { href: "/admin" }
@@ -124,10 +135,35 @@ const output = ts.transpileModule(source, {
   if (!generatedKey.startsWith("sk-router-") || generatedKey.length < 32) {
     throw new Error("Gateway key generation failed");
   }
+  element("#copyProxyKeyBtn").listeners.get("click")();
+  if (window.copiedText !== generatedKey) {
+    throw new Error("Gateway key copy failed");
+  }
+  element("#proxyKeyName").value = "nvidia-only";
+  element("#proxyKeyChannels").value = "nvidia, deepseek";
 
   await window.saveGatewayKey();
   if (!element("#proxyKeyStatus").textContent) {
     throw new Error("Gateway key save did not update status");
+  }
+
+  element("#editor").value = JSON.stringify([
+    {
+      id: "nvidia",
+      name: "NVIDIA",
+      baseUrl: "https://integrate.api.nvidia.com/v1",
+      apiKey: "same-key",
+      enabled: true,
+      models: ["a"]
+    }
+  ]);
+  element("#channelBaseUrl").value = "https://integrate.api.nvidia.com/v1";
+  element("#channelApiKeys").value = "same-key";
+  element("#channelModels").value = "b";
+  element("#generateChannelsBtn").listeners.get("click")();
+  const channels = JSON.parse(element("#editor").value);
+  if (channels.length !== 1 || !channels[0].models.includes("a") || !channels[0].models.includes("b")) {
+    throw new Error("Existing channel model merge failed");
   }
 
   console.log("admin runtime smoke passed");
