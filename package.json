@@ -1,0 +1,17 @@
+{
+  "name": "multi-channel-openai-router-worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "build": "wrangler deploy --dry-run",
+    "deploy": "wrangler deploy",
+    "check": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20250523.0",
+    "typescript": "^5.8.3",
+    "wrangler": "^4.16.1"
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "multi-channel-openai-router",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-05-17",
+  "vars": {
+    "MAX_ATTEMPTS": "3"
+  },
+  "kv_namespaces": [
+    {
+      "binding": "CHANNEL_STORE",
+      "id": "REPLACE_WITH_KV_NAMESPACE_ID"
+    }
+  ]
+}
