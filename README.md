@@ -42,15 +42,9 @@ npx wrangler kv namespace create CHANNEL_STORE
 npx wrangler secret put ADMIN_TOKEN
 ```
 
-设置后台账号密码:
+后台管理员可以在第一次打开 `/admin` 时创建。账号信息会以哈希形式保存到 KV，并通过 HttpOnly Cookie 登录。
 
-```powershell
-npx wrangler secret put ADMIN_USERNAME
-npx wrangler secret put ADMIN_PASSWORD
-npx wrangler secret put ADMIN_SESSION_SECRET
-```
-
-`ADMIN_TOKEN` 仍然可用于脚本调用管理 API；浏览器后台使用 `ADMIN_USERNAME` 和 `ADMIN_PASSWORD` 登录，登录后通过 HttpOnly Cookie 访问管理接口。
+`ADMIN_TOKEN` 仍然可用于脚本调用管理 API；如果你更想用环境变量固定管理员，也可以额外设置 `ADMIN_USERNAME`、`ADMIN_PASSWORD` 和 `ADMIN_SESSION_SECRET`。
 
 如果希望 `/v1/*` 调用也需要鉴权，再设置:
 
@@ -106,7 +100,7 @@ https://你的-worker.workers.dev/
 https://你的-worker.workers.dev/admin
 ```
 
-页面会要求输入 `ADMIN_USERNAME` 和 `ADMIN_PASSWORD`。后台页面同样支持中英文切换，并且会沿用前台选择的语言。后台支持:
+第一次打开后台时，如果还没有管理员账户，会自动进入 `/admin/setup` 创建管理员。之后访问 `/admin` 会先进入独立登录页 `/admin/login`。后台页面同样支持中英文切换，并且会沿用前台选择的语言。后台支持:
 
 - 查看和编辑完整渠道 JSON
 - 从渠道模板追加配置
@@ -179,11 +173,10 @@ npx wrangler kv namespace create CHANNEL_STORE
 
 ```powershell
 npx wrangler secret put ADMIN_TOKEN
-npx wrangler secret put ADMIN_USERNAME
-npx wrangler secret put ADMIN_PASSWORD
-npx wrangler secret put ADMIN_SESSION_SECRET
 npx wrangler secret put PROXY_API_KEY
 ```
+
+`ADMIN_USERNAME`、`ADMIN_PASSWORD`、`ADMIN_SESSION_SECRET` 是可选项；不设置时就在首次打开后台时创建管理员。
 
 ## 注意
 

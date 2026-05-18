@@ -1389,6 +1389,264 @@ function adminPage(): string {
 </html>`;
 }
 
+function authPage(mode: "login" | "setup"): string {
+  const isSetup = mode === "setup";
+  return `<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>${isSetup ? "Setup Admin" : "Admin Login"}</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f7f8fb;
+      --panel: #ffffff;
+      --text: #172033;
+      --muted: #667085;
+      --line: #d9deea;
+      --accent: #186ade;
+      --accent-strong: #0f4fb3;
+      --danger: #c93535;
+      --ok: #16845b;
+      --shadow: 0 16px 40px rgba(31, 42, 68, 0.08);
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: var(--bg);
+      color: var(--text);
+      font: 14px/1.5 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      display: grid;
+      place-items: center;
+      padding: 24px;
+    }
+
+    .shell {
+      width: min(440px, 100%);
+      display: grid;
+      gap: 14px;
+    }
+
+    .top {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 14px;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 24px;
+      line-height: 1.2;
+      letter-spacing: 0;
+    }
+
+    .muted {
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+      padding: 20px;
+      display: grid;
+      gap: 14px;
+    }
+
+    label {
+      display: grid;
+      gap: 7px;
+      color: var(--text);
+      font-size: 13px;
+      font-weight: 650;
+    }
+
+    input {
+      width: 100%;
+      height: 42px;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      background: #fff;
+      color: var(--text);
+      padding: 0 11px;
+      font: inherit;
+      outline: none;
+    }
+
+    input:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(24, 106, 222, 0.12);
+    }
+
+    button,
+    a.button {
+      height: 40px;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      background: #fff;
+      color: var(--text);
+      padding: 0 13px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      text-decoration: none;
+      font: 650 13px/1 Inter, ui-sans-serif, system-ui, sans-serif;
+      cursor: pointer;
+    }
+
+    button.primary {
+      border-color: var(--accent);
+      background: var(--accent);
+      color: #fff;
+    }
+
+    button.primary:hover {
+      background: var(--accent-strong);
+    }
+
+    .row {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .status {
+      min-height: 38px;
+      padding: 9px 11px;
+      border-radius: 7px;
+      background: #f2f5fa;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .status.ok { background: #eaf7f1; color: var(--ok); }
+    .status.error { background: #fff0f0; color: var(--danger); }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <div class="top">
+      <div>
+        <h1 data-i18n="${isSetup ? "setupTitle" : "loginTitle"}">${isSetup ? "Create admin account" : "Admin login"}</h1>
+        <div class="muted" data-i18n="${isSetup ? "setupSub" : "loginSub"}">${isSetup ? "First run setup for this Worker." : "Sign in to manage channels."}</div>
+      </div>
+      <button id="langBtn" type="button">中文 / EN</button>
+    </div>
+    <section class="panel">
+      <label>
+        <span data-i18n="username">Username</span>
+        <input id="username" type="text" autocomplete="username" placeholder="admin">
+      </label>
+      <label>
+        <span data-i18n="password">Password</span>
+        <input id="password" type="password" autocomplete="${isSetup ? "new-password" : "current-password"}" placeholder="${isSetup ? "At least 8 characters" : "Password"}">
+      </label>
+      <div class="row">
+        <a class="button" href="/" data-i18n="home">Home</a>
+        <button id="submitBtn" class="primary" type="button" data-i18n="${isSetup ? "create" : "login"}">${isSetup ? "Create account" : "Login"}</button>
+      </div>
+      <div id="status" class="status" data-i18n="${isSetup ? "setupHint" : "loginHint"}">${isSetup ? "Create the first admin account. It will be stored in KV." : "Use your admin username and password."}</div>
+    </section>
+  </main>
+
+  <script>
+    const messages = {
+      en: {
+        setupTitle: "Create admin account",
+        setupSub: "First run setup for this Worker.",
+        loginTitle: "Admin login",
+        loginSub: "Sign in to manage channels.",
+        username: "Username",
+        password: "Password",
+        home: "Home",
+        create: "Create account",
+        login: "Login",
+        setupHint: "Create the first admin account. It will be stored in KV.",
+        loginHint: "Use your admin username and password.",
+        working: "Please wait...",
+        ok: "Success. Opening admin...",
+        failed: "Request failed"
+      },
+      zh: {
+        setupTitle: "创建管理员账户",
+        setupSub: "首次打开此 Worker 时需要初始化管理员。",
+        loginTitle: "后台登录",
+        loginSub: "登录后管理渠道配置。",
+        username: "账号",
+        password: "密码",
+        home: "首页",
+        create: "创建账户",
+        login: "登录",
+        setupHint: "创建第一个管理员账户，账号信息会保存到 KV。",
+        loginHint: "使用管理员账号和密码登录。",
+        working: "请稍候...",
+        ok: "成功，正在打开后台...",
+        failed: "请求失败"
+      }
+    };
+    let lang = localStorage.getItem("routerLang") || ((navigator.language || "").toLowerCase().startsWith("zh") ? "zh" : "en");
+    const mode = "${mode}";
+    const statusBox = document.querySelector("#status");
+
+    function t(key) {
+      return messages[lang][key] || messages.en[key] || key;
+    }
+
+    function applyLang() {
+      document.documentElement.lang = lang === "zh" ? "zh-CN" : "en";
+      document.querySelectorAll("[data-i18n]").forEach((node) => {
+        const key = node.getAttribute("data-i18n");
+        node.textContent = t(key);
+      });
+      localStorage.setItem("routerLang", lang);
+    }
+
+    function setStatus(message, type = "") {
+      statusBox.textContent = message;
+      statusBox.className = "status" + (type ? " " + type : "");
+    }
+
+    async function submit() {
+      setStatus(t("working"));
+      const response = await fetch(mode === "setup" ? "/admin/setup" : "/admin/login", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          username: document.querySelector("#username").value.trim(),
+          password: document.querySelector("#password").value
+        })
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(data.error || t("failed"));
+      }
+      setStatus(t("ok"), "ok");
+      location.href = "/admin";
+    }
+
+    document.querySelector("#langBtn").addEventListener("click", () => {
+      lang = lang === "zh" ? "en" : "zh";
+      applyLang();
+    });
+    document.querySelector("#submitBtn").addEventListener("click", () => submit().catch((error) => setStatus(error.message, "error")));
+    document.querySelector("#password").addEventListener("keydown", (event) => {
+      if (event.key === "Enter") submit().catch((error) => setStatus(error.message, "error"));
+    });
+    applyLang();
+  </script>
+</body>
+</html>`;
+}
+
 function homePage(): string {
   return `<!doctype html>
 <html lang="zh-CN">
