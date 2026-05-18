@@ -33,6 +33,9 @@ jobs:
       - name: Type check
         run: npm run check
 
+      - name: Admin runtime smoke test
+        run: npm run test:admin
+
       - name: Build dry run
         run: npm run build
         env:
