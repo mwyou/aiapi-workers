@@ -38,6 +38,9 @@ const output = ts.transpileModule(source, {
     }
 
     querySelectorAll() {
+      if (this.selector === "#proxyChannelPicker") {
+        return [new ElementStub("channel-a"), new ElementStub("channel-b")];
+      }
       if (this.selector === "#gatewayKeyList") {
         return [new ElementStub("delete-key")];
       }
@@ -164,6 +167,17 @@ const output = ts.transpileModule(source, {
   const channels = JSON.parse(element("#editor").value);
   if (channels.length !== 1 || !channels[0].models.includes("a") || !channels[0].models.includes("b")) {
     throw new Error("Existing channel model merge failed");
+  }
+
+  element("#editor").value = "[]";
+  element("#channelIdPrefix").value = "nvidia";
+  element("#channelBaseUrl").value = "https://example.com/v1";
+  element("#channelApiKeys").value = "key-a";
+  element("#channelModels").value = "model-a";
+  element("#generateChannelsBtn").listeners.get("click")();
+  const numberedChannels = JSON.parse(element("#editor").value);
+  if (numberedChannels[0].id !== "nvidia-1") {
+    throw new Error(`First generated channel should be numbered with -1, got ${numberedChannels[0].id}`);
   }
 
   console.log("admin runtime smoke passed");

@@ -1256,6 +1256,8 @@ function adminPage(): string {
           proxyKeyChannels: "Allowed channel IDs",
           proxyKeyChannelsHint: "Comma separated, empty means all channels.",
           proxyKeyChannelsPick: "Allowed channels",
+          selectAll: "Select all",
+          clearSelection: "Clear",
           generateProxyKey: "Generate",
           copyProxyKey: "Copy key",
           saveProxyKey: "Save key",
@@ -1480,6 +1482,10 @@ function adminPage(): string {
         </label>
         <div>
           <span style="display:block;margin-bottom:7px;font-size:13px;font-weight:650;" data-i18n="proxyKeyChannelsPick">Allowed channels</span>
+          <div class="row" style="justify-content:flex-start;margin-bottom:8px;">
+            <button id="selectAllProxyChannelsBtn" type="button" data-i18n="selectAll">Select all</button>
+            <button id="clearProxyChannelsBtn" type="button" data-i18n="clearSelection">Clear</button>
+          </div>
           <div id="proxyChannelPicker" class="model-picker"></div>
         </div>
         <div class="row">
@@ -1620,6 +1626,8 @@ function adminPage(): string {
     const proxyKeyNameInput = document.querySelector("#proxyKeyName");
     const proxyKeyChannelsInput = document.querySelector("#proxyKeyChannels");
     const proxyChannelPicker = document.querySelector("#proxyChannelPicker");
+    const selectAllProxyChannelsBtn = document.querySelector("#selectAllProxyChannelsBtn");
+    const clearProxyChannelsBtn = document.querySelector("#clearProxyChannelsBtn");
     const proxyApiKeyInput = document.querySelector("#proxyApiKey");
     const proxyKeyStatus = document.querySelector("#proxyKeyStatus");
     const gatewayKeyList = document.querySelector("#gatewayKeyList");
@@ -1786,6 +1794,8 @@ function adminPage(): string {
           proxyKeyChannels: "允许的渠道 ID",
           proxyKeyChannelsHint: "逗号分隔，留空表示允许所有渠道。",
           proxyKeyChannelsPick: "允许的渠道",
+          selectAll: "全选",
+          clearSelection: "清空",
           generateProxyKey: "生成",
           copyProxyKey: "复制 Key",
           saveProxyKey: "保存 Key",
@@ -2053,10 +2063,21 @@ function adminPage(): string {
       proxyChannelPicker.innerHTML = channels.map((channel) => '<label class="checkline" style="font-weight:650;"><input type="checkbox" value="' + escapeHtml(channel.id || "") + '"><span>' + escapeHtml(channel.id || "") + '</span></label>').join("");
       proxyChannelPicker.querySelectorAll("input[type=checkbox]").forEach((input) => {
         input.addEventListener("change", () => {
-          const selected = [...proxyChannelPicker.querySelectorAll("input[type=checkbox]:checked")].map((item) => item.value);
-          proxyKeyChannelsInput.value = selected.join(", ");
+          syncProxyChannelInput();
         });
       });
+    }
+
+    function syncProxyChannelInput() {
+      const selected = [...proxyChannelPicker.querySelectorAll("input[type=checkbox]:checked")].map((item) => item.value);
+      proxyKeyChannelsInput.value = selected.join(", ");
+    }
+
+    function setProxyChannelSelection(checked) {
+      proxyChannelPicker.querySelectorAll("input[type=checkbox]").forEach((input) => {
+        input.checked = checked;
+      });
+      syncProxyChannelInput();
     }
 
     function generateProxyApiKey() {
@@ -2265,7 +2286,7 @@ function adminPage(): string {
           return;
         }
 
-        let nextId = apiKeys.length === 1 ? prefix : prefix + "-" + (index + 1);
+        let nextId = prefix + "-" + (index + 1);
         let suffix = 2;
         while (existingIds.has(nextId)) {
           nextId = prefix + "-" + suffix;
@@ -2323,6 +2344,14 @@ function adminPage(): string {
 
     document.querySelector("#copyProxyKeyBtn").addEventListener("click", () => {
       copyProxyApiKey().catch((error) => setProxyKeyStatus(error.message, "error"));
+    });
+
+    selectAllProxyChannelsBtn.addEventListener("click", () => {
+      setProxyChannelSelection(true);
+    });
+
+    clearProxyChannelsBtn.addEventListener("click", () => {
+      setProxyChannelSelection(false);
     });
 
     document.querySelector("#saveProxyKeyBtn").addEventListener("click", () => {
