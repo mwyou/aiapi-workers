@@ -92,13 +92,21 @@ curl "https://你的-worker.workers.dev/v1/chat/completions" `
 
 ## 后台管理页面
 
+部署后根路径是一个轻量前台首页:
+
+```text
+https://你的-worker.workers.dev/
+```
+
+前台会展示当前域名对应的 API Base URL、健康检查、后台入口，并支持中英文切换。
+
 部署后打开:
 
 ```text
 https://你的-worker.workers.dev/admin
 ```
 
-页面会要求输入 `ADMIN_USERNAME` 和 `ADMIN_PASSWORD`。后台页面支持:
+页面会要求输入 `ADMIN_USERNAME` 和 `ADMIN_PASSWORD`。后台页面同样支持中英文切换，并且会沿用前台选择的语言。后台支持:
 
 - 查看和编辑完整渠道 JSON
 - 保存渠道池到 KV
