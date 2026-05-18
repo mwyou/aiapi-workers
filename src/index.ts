@@ -1167,7 +1167,18 @@ function adminPage(): string {
         <div class="form-grid">
           <label>
             <span data-i18n="templateLabel">Channel template</span>
-            <select id="templateSelect"></select>
+            <select id="templateSelect">
+              <option value="openai">OpenAI</option>
+              <option value="nvidia">NVIDIA NIM</option>
+              <option value="openrouter">OpenRouter</option>
+              <option value="deepseek">DeepSeek</option>
+              <option value="groq">Groq</option>
+              <option value="together">Together AI</option>
+              <option value="siliconflow">SiliconFlow</option>
+              <option value="moonshot">Moonshot</option>
+              <option value="dashscope">Alibaba DashScope</option>
+              <option value="custom">Custom OpenAI-compatible</option>
+            </select>
           </label>
           <label>
             <span data-i18n="channelIdPrefix">ID prefix</span>
@@ -1495,10 +1506,15 @@ function adminPage(): string {
       } catch {}
     }
 
-    let adminLang = storageGet("routerLang") || ((navigator.language || "").toLowerCase().startsWith("zh") ? "zh" : "en");
+    function normalizeLang(value) {
+      return value === "zh" || value === "en" ? value : ((navigator.language || "").toLowerCase().startsWith("zh") ? "zh" : "en");
+    }
+
+    let adminLang = normalizeLang(storageGet("routerLang"));
 
     function t(key) {
-      return adminMessages[adminLang][key] || adminMessages.en[key] || key;
+      const pack = adminMessages[adminLang] || adminMessages.en;
+      return pack[key] || adminMessages.en[key] || key;
     }
 
     function applyAdminLang() {
@@ -1510,8 +1526,13 @@ function adminPage(): string {
       storageSet("routerLang", adminLang);
     }
 
-    templateSelect.innerHTML = channelTemplates.map((template) => '<option value="' + escapeHtml(template.id) + '">' + escapeHtml(template.label) + '</option>').join("");
-    applyTemplateFields();
+    window.addEventListener("error", (event) => {
+      setStatus(event.message || "Page script error", "error");
+    });
+
+    window.addEventListener("unhandledrejection", (event) => {
+      setStatus(event.reason && event.reason.message ? event.reason.message : "Async request failed", "error");
+    });
 
     function authHeaders(extra = {}) {
       return { ...extra };
@@ -1525,6 +1546,7 @@ function adminPage(): string {
       const template = selectedTemplate();
       const channel = template.channel;
       lastAppliedTemplateId = template.id;
+      templateSelect.value = template.id;
       channelIdPrefixInput.value = channel.id;
       channelNameInput.value = channel.name || template.label;
       channelBaseUrlInput.value = channel.baseUrl;
@@ -1903,8 +1925,17 @@ function adminPage(): string {
         setStatus(error.message, "error");
       }
     });
-    applyAdminLang();
-    loadAll().catch((error) => setStatus(error.message, "error"));
+    function initializeAdmin() {
+      templateSelect.innerHTML = channelTemplates.map((template) => '<option value="' + escapeHtml(template.id) + '">' + escapeHtml(template.label) + '</option>').join("");
+      if (!channelTemplates.some((template) => template.id === templateSelect.value)) {
+        templateSelect.value = channelTemplates[0].id;
+      }
+      applyTemplateFields();
+      applyAdminLang();
+      loadAll().catch((error) => setStatus(error.message, "error"));
+    }
+
+    initializeAdmin();
   </script>
 </body>
 </html>`;
