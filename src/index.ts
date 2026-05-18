@@ -1106,7 +1106,7 @@ function adminPage(): string {
         <div class="subtle" data-i18n="adminSub">Manage OpenAI-compatible channels stored in Workers KV.</div>
       </div>
       <div class="row">
-        <button id="adminLangBtn" type="button">中文 / EN</button>
+        <button id="adminLangBtn" type="button" onclick="window.toggleAdminLang && window.toggleAdminLang()">中文 / EN</button>
         <button id="healthBtn" type="button" data-i18n="checkHealth">Check health</button>
       </div>
     </div>
@@ -1523,8 +1523,23 @@ function adminPage(): string {
         const key = node.getAttribute("data-i18n");
         node.textContent = t(key);
       });
+      const langButton = document.querySelector("#adminLangBtn");
+      if (langButton) {
+        langButton.textContent = adminLang === "zh" ? "EN" : "中文";
+      }
       storageSet("routerLang", adminLang);
     }
+
+    function toggleAdminLang() {
+      adminLang = adminLang === "zh" ? "en" : "zh";
+      applyAdminLang();
+      try {
+        const channels = JSON.parse(editor.value);
+        renderChannels(Array.isArray(channels) ? channels : []);
+      } catch {}
+    }
+
+    window.toggleAdminLang = toggleAdminLang;
 
     window.addEventListener("error", (event) => {
       setStatus(event.message || "Page script error", "error");
@@ -1905,15 +1920,6 @@ function adminPage(): string {
 
     document.querySelector("#logoutBtn").addEventListener("click", () => {
       logout().catch((error) => setStatus(error.message, "error"));
-    });
-
-    document.querySelector("#adminLangBtn").addEventListener("click", () => {
-      adminLang = adminLang === "zh" ? "en" : "zh";
-      applyAdminLang();
-      try {
-        const channels = JSON.parse(editor.value);
-        renderChannels(Array.isArray(channels) ? channels : []);
-      } catch {}
     });
 
     document.querySelector("#healthBtn").addEventListener("click", async () => {
