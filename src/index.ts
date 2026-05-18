@@ -28,6 +28,7 @@ type ChannelCheck = {
 
 const CHANNELS_KV = "router:channels";
 const CURSOR_PREFIX = "router:cursor:";
+const ADMIN_KV = "router:admin";
 const RETRY_STATUSES = new Set([401, 403, 408, 409, 425, 429, 500, 502, 503, 504]);
 
 export default {
@@ -47,7 +48,35 @@ export default {
     }
 
     if ((url.pathname === "/admin" || url.pathname === "/admin/") && request.method === "GET") {
+      if (!(await isAdminConfigured(env))) {
+        return Response.redirect(`${url.origin}/admin/setup`, 302);
+      }
+
+      if (!(await isAdminAuthorized(request, env))) {
+        return Response.redirect(`${url.origin}/admin/login`, 302);
+      }
+
       return html(adminPage());
+    }
+
+    if (url.pathname === "/admin/login" && request.method === "GET") {
+      if (!(await isAdminConfigured(env))) {
+        return Response.redirect(`${url.origin}/admin/setup`, 302);
+      }
+
+      if (await isAdminAuthorized(request, env)) {
+        return Response.redirect(`${url.origin}/admin`, 302);
+      }
+
+      return html(authPage("login"));
+    }
+
+    if (url.pathname === "/admin/setup" && request.method === "GET") {
+      if (await isAdminConfigured(env)) {
+        return Response.redirect(`${url.origin}/admin/login`, 302);
+      }
+
+      return html(authPage("setup"));
     }
 
     if (url.pathname.startsWith("/admin/")) {
@@ -618,6 +647,7 @@ function adminPage(): string {
     }
 
     input,
+    select,
     textarea {
       width: 100%;
       border: 1px solid var(--line);
@@ -628,7 +658,8 @@ function adminPage(): string {
       outline: none;
     }
 
-    input {
+    input,
+    select {
       height: 40px;
       padding: 0 11px;
     }
@@ -642,6 +673,7 @@ function adminPage(): string {
     }
 
     input:focus,
+    select:focus,
     textarea:focus {
       border-color: var(--accent);
       box-shadow: 0 0 0 3px rgba(24, 106, 222, 0.12);
@@ -861,6 +893,13 @@ function adminPage(): string {
     "models": ["meta/llama-3.1-70b-instruct"]
   }
 ]</textarea>
+        <div class="row">
+          <label style="flex:1;">
+            <span data-i18n="templateLabel">Channel template</span>
+            <select id="templateSelect"></select>
+          </label>
+          <button id="appendTemplateBtn" type="button" data-i18n="appendTemplate">Append template</button>
+        </div>
       </section>
 
       <section class="panel stack">
@@ -909,7 +948,60 @@ function adminPage(): string {
     const channelCount = document.querySelector("#channelCount");
     const enabledCount = document.querySelector("#enabledCount");
     const cursorCount = document.querySelector("#cursorCount");
+    const templateSelect = document.querySelector("#templateSelect");
     let checkResults = {};
+    const channelTemplates = [
+      {
+        id: "openai",
+        label: "OpenAI",
+        channel: { id: "openai", name: "OpenAI", baseUrl: "https://api.openai.com/v1", apiKey: "REPLACE_WITH_API_KEY", enabled: true, models: ["gpt-4.1-mini"] }
+      },
+      {
+        id: "nvidia",
+        label: "NVIDIA NIM",
+        channel: { id: "nvidia", name: "NVIDIA", baseUrl: "https://integrate.api.nvidia.com/v1", apiKey: "REPLACE_WITH_API_KEY", enabled: true, models: ["meta/llama-3.1-70b-instruct"] }
+      },
+      {
+        id: "openrouter",
+        label: "OpenRouter",
+        channel: { id: "openrouter", name: "OpenRouter", baseUrl: "https://openrouter.ai/api/v1", apiKey: "REPLACE_WITH_API_KEY", enabled: true, models: ["openai/gpt-4o-mini"] }
+      },
+      {
+        id: "deepseek",
+        label: "DeepSeek",
+        channel: { id: "deepseek", name: "DeepSeek", baseUrl: "https://api.deepseek.com/v1", apiKey: "REPLACE_WITH_API_KEY", enabled: true, models: ["deepseek-chat"] }
+      },
+      {
+        id: "groq",
+        label: "Groq",
+        channel: { id: "groq", name: "Groq", baseUrl: "https://api.groq.com/openai/v1", apiKey: "REPLACE_WITH_API_KEY", enabled: true, models: ["llama-3.1-8b-instant"] }
+      },
+      {
+        id: "together",
+        label: "Together AI",
+        channel: { id: "together", name: "Together AI", baseUrl: "https://api.together.xyz/v1", apiKey: "REPLACE_WITH_API_KEY", enabled: true, models: ["meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo"] }
+      },
+      {
+        id: "siliconflow",
+        label: "SiliconFlow",
+        channel: { id: "siliconflow", name: "SiliconFlow", baseUrl: "https://api.siliconflow.cn/v1", apiKey: "REPLACE_WITH_API_KEY", enabled: true, models: ["Qwen/Qwen2.5-7B-Instruct"] }
+      },
+      {
+        id: "moonshot",
+        label: "Moonshot",
+        channel: { id: "moonshot", name: "Moonshot", baseUrl: "https://api.moonshot.cn/v1", apiKey: "REPLACE_WITH_API_KEY", enabled: true, models: ["moonshot-v1-8k"] }
+      },
+      {
+        id: "dashscope",
+        label: "Alibaba DashScope",
+        channel: { id: "dashscope", name: "Alibaba DashScope", baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1", apiKey: "REPLACE_WITH_API_KEY", enabled: true, models: ["qwen-plus"] }
+      },
+      {
+        id: "custom",
+        label: "Custom OpenAI-compatible",
+        channel: { id: "custom", name: "Custom", baseUrl: "https://example.com/v1", apiKey: "REPLACE_WITH_API_KEY", enabled: true, models: [] }
+      }
+    ];
     const adminMessages = {
       en: {
         adminTitle: "Multi-channel Router Admin",
@@ -926,6 +1018,8 @@ function adminPage(): string {
         cursorScopes: "Cursor scopes",
         channelJson: "Channel JSON",
         channelJsonHint: "Edit the full channel array. Saving resets the default cursor.",
+        templateLabel: "Channel template",
+        appendTemplate: "Append template",
         saveChannels: "Save channels",
         checkChannels: "Check channels",
         refresh: "Refresh",
@@ -951,7 +1045,9 @@ function adminPage(): string {
         allAvailable: "All channels are available.",
         someFailed: "Some channels failed the availability check.",
         healthOk: "Worker health check passed.",
-        healthBad: "Health check returned unexpected data."
+        healthBad: "Health check returned unexpected data.",
+        templateAdded: "Template appended. Review the API key and model list, then save.",
+        invalidJson: "Editor must contain a JSON array."
       },
       zh: {
         adminTitle: "多渠道路由后台",
@@ -968,6 +1064,8 @@ function adminPage(): string {
         cursorScopes: "游标范围",
         channelJson: "渠道 JSON",
         channelJsonHint: "编辑完整渠道数组。保存后会重置默认游标。",
+        templateLabel: "渠道模板",
+        appendTemplate: "追加模板",
         saveChannels: "保存渠道",
         checkChannels: "检测渠道",
         refresh: "刷新",
@@ -993,7 +1091,9 @@ function adminPage(): string {
         allAvailable: "所有渠道可用。",
         someFailed: "部分渠道检测失败。",
         healthOk: "Worker 健康检查通过。",
-        healthBad: "健康检查返回异常。"
+        healthBad: "健康检查返回异常。",
+        templateAdded: "模板已追加。请检查 API Key 和模型列表，然后保存。",
+        invalidJson: "编辑器内容必须是 JSON 数组。"
       }
     };
     let adminLang = localStorage.getItem("routerLang") || ((navigator.language || "").toLowerCase().startsWith("zh") ? "zh" : "en");
@@ -1012,6 +1112,7 @@ function adminPage(): string {
     }
 
     usernameInput.value = localStorage.getItem("routerAdminUsername") || "";
+    templateSelect.innerHTML = channelTemplates.map((template) => '<option value="' + escapeHtml(template.id) + '">' + escapeHtml(template.label) + '</option>').join("");
 
     function authHeaders(extra = {}) {
       return { ...extra };
@@ -1115,7 +1216,7 @@ function adminPage(): string {
     async function saveChannels() {
       const channels = JSON.parse(editor.value);
       if (!Array.isArray(channels)) {
-        throw new Error("Editor must contain a JSON array");
+        throw new Error(t("invalidJson"));
       }
 
       const result = await requestJson("/admin/channels", {
@@ -1126,6 +1227,28 @@ function adminPage(): string {
       renderChannels(result.channels || []);
       await loadAll();
       setStatus(t("saved"), "ok");
+    }
+
+    function appendTemplate() {
+      const template = channelTemplates.find((item) => item.id === templateSelect.value) || channelTemplates[0];
+      const channels = JSON.parse(editor.value);
+      if (!Array.isArray(channels)) {
+        throw new Error(t("invalidJson"));
+      }
+
+      const nextChannel = JSON.parse(JSON.stringify(template.channel));
+      const existingIds = new Set(channels.map((item) => item && item.id).filter(Boolean));
+      let nextId = nextChannel.id;
+      let suffix = 2;
+      while (existingIds.has(nextId)) {
+        nextId = nextChannel.id + "-" + suffix;
+        suffix += 1;
+      }
+      nextChannel.id = nextId;
+      channels.push(nextChannel);
+      editor.value = JSON.stringify(channels, null, 2);
+      renderChannels(channels);
+      setStatus(t("templateAdded"), "ok");
     }
 
     async function checkChannels() {
@@ -1150,6 +1273,14 @@ function adminPage(): string {
 
     document.querySelector("#saveBtn").addEventListener("click", () => {
       saveChannels().catch((error) => setStatus(error.message, "error"));
+    });
+
+    document.querySelector("#appendTemplateBtn").addEventListener("click", () => {
+      try {
+        appendTemplate();
+      } catch (error) {
+        setStatus(error.message, "error");
+      }
     });
 
     document.querySelector("#checkChannelsBtn").addEventListener("click", () => {

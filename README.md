@@ -109,6 +109,7 @@ https://你的-worker.workers.dev/admin
 页面会要求输入 `ADMIN_USERNAME` 和 `ADMIN_PASSWORD`。后台页面同样支持中英文切换，并且会沿用前台选择的语言。后台支持:
 
 - 查看和编辑完整渠道 JSON
+- 从渠道模板追加配置
 - 保存渠道池到 KV
 - 查看渠道数量、启用数量
 - 查看每个模型的轮询游标
@@ -117,6 +118,21 @@ https://你的-worker.workers.dev/admin
 
 后台页面读取完整 `apiKey` 会调用 `/admin/channels/raw`，这个接口同样需要 `ADMIN_TOKEN`。
 渠道可用性检测会调用 `/admin/channels/check`，Worker 会依次请求每个渠道的 OpenAI-compatible `/models`，并返回 HTTP 状态、耗时和错误信息。
+
+内置渠道模板包括:
+
+- OpenAI
+- NVIDIA NIM
+- OpenRouter
+- DeepSeek
+- Groq
+- Together AI
+- SiliconFlow
+- Moonshot
+- Alibaba DashScope
+- Custom OpenAI-compatible
+
+模板只会追加到编辑器里，不会自动保存；`apiKey` 会保留为 `REPLACE_WITH_API_KEY`，需要你自己填好后再保存。
 
 ## 本地运行
 
