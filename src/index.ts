@@ -100,7 +100,7 @@ export default {
     }
 
     if (!(await isProxyAuthorized(request, env))) {
-      return withCors(json({ error: "Unauthorized" }, 401));
+        return withCors(json({ error: "Unauthorized. Configure a Gateway API key in /admin first." }, 401));
     }
 
     return withCors(await proxyToChannel(request, env, url));
@@ -180,10 +180,7 @@ async function handleAdmin(request: Request, env: Env, url: URL): Promise<Respon
       return json({ error: "Expected JSON body: { \"channels\": [...] }" }, 400);
     }
 
-    const channels = normalizeChannels(rawChannels);
-    if (channels.length === 0) {
-      return json({ error: "At least one valid channel is required" }, 400);
-    }
+    const channels = dedupeChannels(normalizeChannels(rawChannels));
 
     await env.CHANNEL_STORE.put(CHANNELS_KV, JSON.stringify(channels));
     await resetCursors(env);
@@ -458,6 +455,19 @@ function normalizeChannels(value: unknown): Channel[] {
   });
 }
 
+function dedupeChannels(channels: Channel[]): Channel[] {
+  const seen = new Set<string>();
+  return channels.filter((channel) => {
+    const key = `${channel.baseUrl.replace(/\/+$/, "").toLowerCase()}::${channel.apiKey}`;
+    if (seen.has(key)) {
+      return false;
+    }
+
+    seen.add(key);
+    return true;
+  });
+}
+
 async function reserveNextIndex(env: Env, scope: string, channelCount: number): Promise<number> {
   const key = cursorKey(scope);
   const current = Number(await env.CHANNEL_STORE.get(key)) || 0;
@@ -488,10 +498,10 @@ function cursorKey(scope: string): string {
 async function isProxyAuthorized(request: Request, env: Env): Promise<boolean> {
   const proxyApiKey = await getProxyApiKey(env);
   if (!proxyApiKey) {
-    return true;
+    return false;
   }
 
-  return bearerToken(request) === proxyApiKey;
+  return timingSafeEqual(bearerToken(request) || "", proxyApiKey);
 }
 
 async function isAdminAuthorized(request: Request, env: Env): Promise<boolean> {
@@ -630,6 +640,21 @@ async function hmac(data: string, secret: string): Promise<string> {
   );
   const signature = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(data));
   return base64UrlEncodeBytes(new Uint8Array(signature));
+}
+
+function timingSafeEqual(left: string, right: string): boolean {
+  const leftBytes = new TextEncoder().encode(left);
+  const rightBytes = new TextEncoder().encode(right);
+  if (leftBytes.length !== rightBytes.length) {
+    return false;
+  }
+
+  let diff = 0;
+  for (let index = 0; index < leftBytes.length; index += 1) {
+    diff |= leftBytes[index] ^ rightBytes[index];
+  }
+
+  return diff === 0;
 }
 
 function base64UrlEncode(value: string): string {
@@ -1097,6 +1122,158 @@ function adminPage(): string {
       }
     }
   </style>
+  <script>
+    (function () {
+      const fallbackMessages = {
+        en: {
+          adminTitle: "Multi-channel Router Admin",
+          adminSub: "Manage OpenAI-compatible channels stored in Workers KV.",
+          checkHealth: "Check health",
+          home: "Home",
+          logout: "Logout",
+          loadConfig: "Load config",
+          adminReady: "You are signed in. Load the current channel config to start.",
+          channels: "Channels",
+          enabled: "Enabled",
+          cursorScopes: "Cursor scopes",
+          proxyKeyTitle: "Gateway API key",
+          proxyKeyHint: "External clients use this key to call /v1.",
+          proxyKeyInput: "New API key",
+          generateProxyKey: "Generate",
+          saveProxyKey: "Save key",
+          proxyKeyGenerated: "Generated locally. Save it before use.",
+          proxyKeySaved: "Gateway API key saved. Copy it into your external client.",
+          quickAdd: "Quick add channels",
+          quickAddHint: "Choose a template, paste one or more API keys, then generate channels.",
+          generateChannels: "Generate channels",
+          templateLabel: "Channel template",
+          channelIdPrefix: "ID prefix",
+          channelName: "Channel name",
+          baseUrl: "Base URL",
+          modelsInput: "Models",
+          modelSearch: "Search fetched models",
+          apiKeysInput: "API keys",
+          channelJson: "Channel JSON",
+          channelJsonHint: "Edit the full channel array. Saving resets the default cursor.",
+          saveChannels: "Save channels",
+          checkChannels: "Check channels",
+          refresh: "Refresh",
+          cursors: "Cursors",
+          cursorsHint: "Per model round-robin position"
+        },
+        zh: {
+          adminTitle: "多渠道路由后台",
+          adminSub: "管理保存在 Workers KV 中的 OpenAI-compatible 渠道。",
+          checkHealth: "健康检查",
+          home: "首页",
+          logout: "退出",
+          loadConfig: "加载配置",
+          adminReady: "你已登录。加载当前渠道配置后即可开始管理。",
+          channels: "渠道",
+          enabled: "启用",
+          cursorScopes: "游标范围",
+          proxyKeyTitle: "网关调用 Key",
+          proxyKeyHint: "外部客户端用这个 Key 调用 /v1。",
+          proxyKeyInput: "新的 API Key",
+          generateProxyKey: "生成",
+          saveProxyKey: "保存 Key",
+          proxyKeyGenerated: "已在本地生成，使用前请先保存。",
+          proxyKeySaved: "网关调用 Key 已保存。把它填到外部客户端里使用。",
+          quickAdd: "快速添加渠道",
+          quickAddHint: "选择模板，粘贴一个或多个 API Key，然后生成渠道。",
+          generateChannels: "生成渠道",
+          templateLabel: "渠道模板",
+          channelIdPrefix: "ID 前缀",
+          channelName: "渠道名称",
+          baseUrl: "Base URL",
+          modelsInput: "模型",
+          modelSearch: "搜索已获取模型",
+          apiKeysInput: "API Key",
+          channelJson: "渠道 JSON",
+          channelJsonHint: "编辑完整渠道数组。保存后会重置默认游标。",
+          saveChannels: "保存渠道",
+          checkChannels: "检测渠道",
+          refresh: "刷新",
+          cursors: "游标",
+          cursorsHint: "每个模型的轮询位置"
+        }
+      };
+
+      function currentLang() {
+        try {
+          const stored = window.localStorage && window.localStorage.getItem("routerLang");
+          if (stored === "zh" || stored === "en") return stored;
+        } catch {}
+        return (navigator.language || "").toLowerCase().startsWith("zh") ? "zh" : "en";
+      }
+
+      function setLang(value) {
+        try {
+          if (window.localStorage) window.localStorage.setItem("routerLang", value);
+        } catch {}
+      }
+
+      function setBox(selector, message, type) {
+        const box = document.querySelector(selector);
+        if (!box) return;
+        box.textContent = message;
+        box.className = "status" + (type ? " " + type : "");
+      }
+
+      function translate(lang) {
+        const pack = fallbackMessages[lang] || fallbackMessages.en;
+        document.documentElement.lang = lang === "zh" ? "zh-CN" : "en";
+        document.querySelectorAll("[data-i18n]").forEach((node) => {
+          const key = node.getAttribute("data-i18n");
+          if (key && pack[key]) node.textContent = pack[key];
+        });
+        const button = document.querySelector("#adminLangBtn");
+        if (button) button.textContent = lang === "zh" ? "EN" : "中文";
+      }
+
+      window.toggleAdminLang = function () {
+        const next = currentLang() === "zh" ? "en" : "zh";
+        setLang(next);
+        translate(next);
+      };
+
+      window.generateGatewayKey = function () {
+        const input = document.querySelector("#proxyApiKey");
+        const bytes = new Uint8Array(32);
+        crypto.getRandomValues(bytes);
+        const key = Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+        if (input) {
+          input.value = "sk-router-" + key;
+          input.select();
+        }
+        setBox("#proxyKeyStatus", fallbackMessages[currentLang()].proxyKeyGenerated, "ok");
+      };
+
+      window.saveGatewayKey = async function () {
+        const input = document.querySelector("#proxyApiKey");
+        const proxyApiKey = input && input.value ? input.value.trim() : "";
+        if (!proxyApiKey) {
+          setBox("#proxyKeyStatus", currentLang() === "zh" ? "请先生成或输入 API Key。" : "Generate or enter an API key first.", "error");
+          return;
+        }
+        try {
+          const response = await fetch("/admin/settings", {
+            method: "PUT",
+            credentials: "same-origin",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ proxyApiKey })
+          });
+          const data = await response.json().catch(() => ({}));
+          if (!response.ok) throw new Error(data.error || "Request failed with " + response.status);
+          setBox("#proxyKeyStatus", fallbackMessages[currentLang()].proxyKeySaved, "ok");
+        } catch (error) {
+          setBox("#proxyKeyStatus", error && error.message ? error.message : "Request failed", "error");
+        }
+      };
+
+      document.addEventListener("DOMContentLoaded", () => translate(currentLang()));
+    })();
+  </script>
 </head>
 <body>
   <header>
@@ -1106,7 +1283,7 @@ function adminPage(): string {
         <div class="subtle" data-i18n="adminSub">Manage OpenAI-compatible channels stored in Workers KV.</div>
       </div>
       <div class="row">
-        <button id="adminLangBtn" type="button" onclick="window.toggleAdminLang && window.toggleAdminLang()">中文 / EN</button>
+        <button id="adminLangBtn" type="button" onclick="window.toggleAdminLang && window.toggleAdminLang()">中文</button>
         <button id="healthBtn" type="button" data-i18n="checkHealth">Check health</button>
       </div>
     </div>
@@ -1148,8 +1325,8 @@ function adminPage(): string {
           <input id="proxyApiKey" type="text" autocomplete="off" placeholder="sk-router-...">
         </label>
         <div class="row">
-          <button id="generateProxyKeyBtn" type="button" data-i18n="generateProxyKey">Generate</button>
-          <button id="saveProxyKeyBtn" class="primary" type="button" data-i18n="saveProxyKey">Save key</button>
+          <button id="generateProxyKeyBtn" type="button" data-i18n="generateProxyKey" onclick="window.generateGatewayKey && window.generateGatewayKey()">Generate</button>
+          <button id="saveProxyKeyBtn" class="primary" type="button" data-i18n="saveProxyKey" onclick="window.saveGatewayKey && window.saveGatewayKey()">Save key</button>
         </div>
         <div id="proxyKeyStatus" class="status" data-i18n="proxyKeyUnknown">Not loaded.</div>
       </section>
@@ -1602,7 +1779,11 @@ function adminPage(): string {
     }
 
     function normalizeBaseUrl(value) {
-      return String(value || "").trim().replace(/\/+$/, "").toLowerCase();
+      let normalized = String(value || "").trim();
+      while (normalized.endsWith("/")) {
+        normalized = normalized.slice(0, -1);
+      }
+      return normalized.toLowerCase();
     }
 
     function channelFingerprint(channel) {
@@ -1671,7 +1852,7 @@ function adminPage(): string {
     function generateProxyApiKey() {
       const bytes = new Uint8Array(32);
       crypto.getRandomValues(bytes);
-      const value = btoa(String.fromCharCode(...bytes)).replace(/\\+/g, "-").replace(/\\//g, "_").replace(/=+$/, "");
+      const value = Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
       proxyApiKeyInput.value = "sk-router-" + value;
       proxyApiKeyInput.select();
       setProxyKeyStatus(t("proxyKeyGenerated"), "ok");
@@ -1883,7 +2064,9 @@ function adminPage(): string {
     });
 
     document.querySelector("#generateProxyKeyBtn").addEventListener("click", () => {
-      generateProxyApiKey();
+      if (!proxyApiKeyInput.value) {
+        generateProxyApiKey();
+      }
     });
 
     document.querySelector("#saveProxyKeyBtn").addEventListener("click", () => {

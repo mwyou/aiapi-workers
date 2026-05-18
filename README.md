@@ -70,7 +70,7 @@ curl "https://你的-worker.workers.dev/admin/channels" `
 
 ## OpenAI-compatible 调用
 
-外部客户端使用本项目自己的网关调用 Key，而不是渠道商的 API Key。推荐在后台页面的“网关调用 Key”里生成并保存；`PROXY_API_KEY` 环境变量仍然可作为兜底配置。如果后台和环境变量都没有设置，`/v1/*` 将不校验调用方 token，不建议公网使用。
+外部客户端使用本项目自己的网关调用 Key，而不是渠道商的 API Key。推荐在后台页面的“网关调用 Key”里生成并保存；`PROXY_API_KEY` 环境变量仍然可作为兜底配置。如果后台和环境变量都没有设置，`/v1/*` 会拒绝调用。
 
 ```powershell
 curl "https://你的-worker.workers.dev/v1/chat/completions" `
@@ -79,7 +79,7 @@ curl "https://你的-worker.workers.dev/v1/chat/completions" `
   --data "{\"model\":\"meta/llama-3.1-70b-instruct\",\"messages\":[{\"role\":\"user\",\"content\":\"hello\"}]}"
 ```
 
-如果未设置 `PROXY_API_KEY`，`/v1/*` 不会校验调用方 token，只负责换成渠道自己的 `apiKey` 转发。
+如果后台未保存网关调用 Key，且未设置 `PROXY_API_KEY`，`/v1/*` 会返回未授权。Worker 转发时会自动把调用方的网关 Key 换成渠道自己的 `apiKey`。
 
 根路径 `/` 会跳转到 `/admin`，只影响浏览器打开首页。OpenAI-compatible API 不走 `/admin`:
 
